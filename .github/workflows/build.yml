@@ -1,0 +1,121 @@
+name: Build MemCore Desktop
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write  # 允许创建 GitHub Release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    env:
+      FEISHU_WEBHOOK: https://open.feishu.cn/open-apis/bot/v2/hook/f5863f4d-4f8f-41e6-8361-ee3a16672099
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version info
+        shell: bash
+        run: |
+          echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "APP_VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --include=dev
+
+      - name: TypeScript build
+        run: npm run build
+
+      # dev 分支：打包但不签名，上传为 Artifact
+      - name: Electron Builder (dev)
+        if: github.ref == 'refs/heads/dev'
+        run: npx electron-builder --win --dir
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload dev artifact
+        if: github.ref == 'refs/heads/dev'
+        uses: actions/upload-artifact@v4
+        with:
+          name: memcore-desktop-${{ env.SHORT_SHA }}-win-unpacked
+          path: release/win-unpacked/
+          retention-days: 7
+
+      # main 分支：打包安装包 + 发布 GitHub Release
+      - name: Electron Builder (main - installer)
+        if: github.ref == 'refs/heads/main'
+        run: npx electron-builder --win --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute SHA256
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem release/*.exe | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          echo "EXE_NAME=$($exe.Name)" >> $env:GITHUB_ENV
+          echo "EXE_SHA256=$hash" >> $env:GITHUB_ENV
+          "$hash  $($exe.Name)" | Out-File -FilePath release/SHA256SUMS.txt -Encoding utf8
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}-${{ env.SHORT_SHA }}
+          name: "MemCore Desktop v${{ env.APP_VERSION }}"
+          body: |
+            ## MemCore Desktop v${{ env.APP_VERSION }}
+
+            **构建信息**
+            - Commit: `${{ env.SHORT_SHA }}`
+            - 平台: Windows x64
+
+            **SHA256 校验**
+            ```
+            ${{ env.EXE_SHA256 }}  ${{ env.EXE_NAME }}
+            ```
+          draft: false
+          prerelease: false
+          files: |
+            release/*.exe
+            release/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 飞书通知
+      - name: Notify Feishu on success
+        if: success()
+        shell: bash
+        run: |
+          if [ "$BRANCH_NAME" == "main" ]; then
+            MSG="✅ MemCore Desktop v${APP_VERSION} 发布成功！\ncommit: ${SHORT_SHA}\nSHA256: ${EXE_SHA256}"
+          else
+            MSG="✅ MemCore Desktop dev 构建成功\nbranch: ${BRANCH_NAME} | commit: ${SHORT_SHA}"
+          fi
+          curl -s -X POST "$FEISHU_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"$MSG\"}}"
+
+      - name: Notify Feishu on failure
+        if: failure()
+        shell: bash
+        run: |
+          curl -s -X POST "$FEISHU_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"❌ MemCore Desktop 构建失败\nbranch: ${BRANCH_NAME} | commit: ${SHORT_SHA}\"}}"
