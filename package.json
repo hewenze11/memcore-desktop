@@ -1,0 +1,27 @@
+{
+  "name": "memcore-desktop",
+  "version": "1.0.0",
+  "description": "MemCore Electron desktop client",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "tsc && electron dist/main/index.js",
+    "build": "tsc",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win"
+  },
+  "keywords": [],
+  "author": "Cayan",
+  "license": "MIT",
+  "dependencies": {
+    "form-data": "^4.0.0",
+    "keytar": "^7.9.0"
+  },
+  "devDependencies": {
+    "@types/form-data": "^2.5.0",
+    "@types/node": "^20.19.43",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.9.3"
+  }
+}

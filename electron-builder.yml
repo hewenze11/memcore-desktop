@@ -1,0 +1,43 @@
+appId: ai.cayan.memcore
+productName: MemCore
+copyright: Copyright © 2026 Cayan
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**/*
+  - src/renderer/**/*
+  - node_modules/**/*
+  - package.json
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  license: LICENSE
+
+mac:
+  target:
+    - dmg
+  icon: build/icon.icns
+  category: public.app-category.productivity
+
+linux:
+  target:
+    - AppImage
+  icon: build/icon.png
+
+publish:
+  provider: github
+  owner: hewenze11
+  repo: memcore-desktop
