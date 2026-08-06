@@ -114,24 +114,47 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 飞书通知
+      # 飞书通知（使用 Python 构造 JSON，避免 bash 字符串乱码和换行问题）
       - name: Notify Feishu on success
         if: success()
-        shell: bash
+        shell: python
         run: |
-          if [ "$BRANCH_NAME" == "main" ]; then
-            MSG="✅ MemCore Desktop v${APP_VERSION} 发布成功！\ncommit: ${SHORT_SHA}\nSHA256: ${EXE_SHA256}"
-          else
-            MSG="✅ MemCore Desktop dev 构建成功\nbranch: ${BRANCH_NAME} | commit: ${SHORT_SHA}"
-          fi
-          curl -s -X POST "$FEISHU_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"$MSG\"}}"
+          import os, json, urllib.request
+          webhook = os.environ['FEISHU_WEBHOOK']
+          branch  = os.environ.get('BRANCH_NAME', '')
+          sha     = os.environ.get('SHORT_SHA', '')
+          ver     = os.environ.get('APP_VERSION', '')
+          chk     = os.environ.get('EXE_SHA256', '')
+
+          if branch == 'main':
+              lines = [
+                  [{"tag":"text","text":f"[MemCore Desktop] v{ver} 发布成功 ✅"}],
+                  [{"tag":"text","text":f"commit: {sha}"}],
+                  [{"tag":"text","text":f"SHA256: {chk}"}],
+              ]
+          else:
+              lines = [
+                  [{"tag":"text","text":f"[MemCore Desktop] dev 构建成功 ✅"}],
+                  [{"tag":"text","text":f"branch: {branch}  commit: {sha}"}],
+              ]
+
+          payload = {"msg_type":"post","content":{"post":{"zh_cn":{"title":"CI 通知","content":lines}}}}
+          req = urllib.request.Request(webhook, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+          urllib.request.urlopen(req, timeout=10)
 
       - name: Notify Feishu on failure
         if: failure()
-        shell: bash
+        shell: python
         run: |
-          curl -s -X POST "$FEISHU_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"❌ MemCore Desktop 构建失败\nbranch: ${BRANCH_NAME} | commit: ${SHORT_SHA}\"}}"
+          import os, json, urllib.request
+          webhook = os.environ['FEISHU_WEBHOOK']
+          branch  = os.environ.get('BRANCH_NAME', '')
+          sha     = os.environ.get('SHORT_SHA', '')
+
+          lines = [
+              [{"tag":"text","text":f"[MemCore Desktop] 构建失败 ❌"}],
+              [{"tag":"text","text":f"branch: {branch}  commit: {sha}"}],
+          ]
+          payload = {"msg_type":"post","content":{"post":{"zh_cn":{"title":"CI 通知","content":lines}}}}
+          req = urllib.request.Request(webhook, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+          urllib.request.urlopen(req, timeout=10)
