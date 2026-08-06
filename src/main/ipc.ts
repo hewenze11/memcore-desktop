@@ -127,13 +127,15 @@ ipcMain.handle('models.add', async (_event, data: {
       }),
       signal: AbortSignal.timeout(15000),
     })
-    // 401/403 = Key 错误
-    if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: 'API Key 验证失败，请检查' }
-    }
-    // 404 = 模型名或路径错误
-    if (res.status === 404) {
-      return { ok: false, error: '模型名称或 Base URL 不正确' }
+    // 拦截所有非成功响应
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, error: 'API Key 验证失败，请检查' }
+      }
+      if (res.status === 404) {
+        return { ok: false, error: '模型名称或 Base URL 不正确' }
+      }
+      return { ok: false, error: `服务端错误 (${res.status})，请稍后重试` }
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -256,19 +258,23 @@ ipcMain.handle('llm.streamChat', async (event, data: {
   // 占位 assistant 消息（流式追加）
   appendMessage(instanceId, { role: 'assistant', content: '', ts: Date.now() })
 
+  // 固化此次请求的上下文（不信后续 payload 变化，防止 instanceId 串台）
+  const boundInstanceId = instanceId
+  const boundModelUrl = model.baseUrl + '/chat/completions'
+  const boundModelName = model.modelName
+
   // 发起流式请求（在后台运行，不 await）
   ;(async () => {
     let accumulated = ''
     try {
-      const url = model.baseUrl + '/chat/completions'
-      const res = await fetch(url, {
+      const res = await fetch(boundModelUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${modelKey}`,
         },
         body: JSON.stringify({
-          model: model.modelName,
+          model: boundModelName,
           messages: fullMessages,
           stream: true,
         }),
@@ -277,13 +283,11 @@ ipcMain.handle('llm.streamChat', async (event, data: {
 
       if (!res.ok) {
         const errText = await res.text().catch(() => '')
-        activeStreams.delete(requestId)
         safeSend(sender, 'llm:error', { requestId, error: `模型返回错误 ${res.status}: ${errText.slice(0, 100)}` })
         return
       }
 
       if (!res.body) {
-        activeStreams.delete(requestId)
         safeSend(sender, 'llm:error', { requestId, error: '模型返回空响应' })
         return
       }
@@ -317,19 +321,19 @@ ipcMain.handle('llm.streamChat', async (event, data: {
         }
       }
 
-      // 更新存储中的 assistant 消息
-      updateLastAssistantMessage(instanceId, accumulated)
-      activeStreams.delete(requestId)
+      // 用固化的 instanceId 写入（防止串台）
+      updateLastAssistantMessage(boundInstanceId, accumulated)
       safeSend(sender, 'llm:done', { requestId })
     } catch (e: unknown) {
-      activeStreams.delete(requestId)
-      const msg = e instanceof Error ? e.message : String(e)
-      if (msg.includes('abort') || msg.includes('AbortError')) {
-        // 用户主动取消，不报错
+      // 用 error.name 判断 abort，不依赖字符串
+      if (e instanceof Error && e.name === 'AbortError') {
         safeSend(sender, 'llm:error', { requestId, error: 'ABORTED' })
       } else {
-        safeSend(sender, 'llm:error', { requestId, error: msg })
+        safeSend(sender, 'llm:error', { requestId, error: e instanceof Error ? e.message : String(e) })
       }
+    } finally {
+      // finally 确保 activeStreams 在所有路径下都清理
+      activeStreams.delete(requestId)
     }
   })()
 

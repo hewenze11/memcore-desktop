@@ -198,11 +198,18 @@ export default function Main() {
   const handleSend = async () => {
     if (!input.trim() || sending || !selectedId || !selectedInstance || !selectedModel) return
 
+    // P1-2 fix: 先清理可能残留的旧流（防止快速重发竞态）
+    if (cleanupRef.current) {
+      cleanupRef.current()
+      cleanupRef.current = null
+    }
+
     const userContent = input.trim()
     setInput('')
     setSending(true)
 
     const requestId = globalThis.crypto.randomUUID()
+    currentRequestIdRef.current = requestId
     const userMsg: ChatMessage = { role: 'user', content: userContent, ts: Date.now() }
     const assistantPlaceholder: ChatMessage & { streaming: boolean } = {
       role: 'assistant', content: '', ts: Date.now(), streaming: true
@@ -237,6 +244,7 @@ export default function Main() {
         })
         setSending(false)
         cleanupRef.current = null
+        currentRequestIdRef.current = null
       },
       (error) => {
         if (error !== 'ABORTED') {
@@ -244,7 +252,7 @@ export default function Main() {
         }
         setMessages((prev) => prev.filter((m) => !(m.role === 'assistant' && m.content === '' && (m as any).streaming)))
         setSending(false)
-        cleanupRef.current = null
+        cleanupRef.current = null  // P1-3 fix: onError 路径也清零
       }
     )
     cleanupRef.current = cleanup
@@ -280,11 +288,18 @@ export default function Main() {
     }
   }
 
+  // 记录当前 requestId，切换实例时用来 abort 主进程流
+  const currentRequestIdRef = useRef<string | null>(null)
+
   const handleSelectInstance = (id: string) => {
-    // 切换实例时取消当前流
+    // 切换实例：cleanup renderer listener + abort 主进程流
     if (cleanupRef.current) {
       cleanupRef.current()
       cleanupRef.current = null
+    }
+    if (currentRequestIdRef.current) {
+      window.electronAPI.llm.abort(currentRequestIdRef.current)
+      currentRequestIdRef.current = null
     }
     setSending(false)
     setSelectedId(id)
