@@ -1,112 +1,83 @@
 /**
- * store.ts — electron-store 封装（非敏感数据本地持久化）
+ * store.ts — 本地持久化存储
  *
- * 敏感数据（API Key、模型 Key）使用 electron safeStorage 加密，不以明文存在 store 中。
- * 模型 Key 的 safeStorage key 格式：`modelKey:{modelId}`
+ * 非敏感数据：electron-store（JSON 文件）
+ * 敏感数据（API Key）：electron safeStorage 加密后存 store
  */
 
 import Store from 'electron-store'
 import { safeStorage } from 'electron'
+import { randomUUID } from 'crypto'
 
-// ── Store Schema ──────────────────────────────────────────────────────────────
+// ── 类型定义 ──────────────────────────────────────────────────────────────────
 
-interface ModelConfig {
+export interface ModelConfig {
   id: string
   name: string
   baseUrl: string
   modelName: string
+  /** Key 不存这里，存 safeStorage，key = "modelKey:{id}" */
 }
 
-interface InstanceConfig {
+export interface InstanceConfig {
   id: string
   name: string
   modelId: string
   workspaceId: string
+  sessionId: string
   systemPrompt?: string
   tags?: string[]
-  createdAt: string
+  createdAt: number
 }
 
-interface MessageRecord {
-  id: string
-  role: 'user' | 'assistant' | 'system'
+export interface ChatMessage {
+  role: 'user' | 'assistant'
   content: string
   ts: number
 }
 
-interface UserInfoRecord {
-  id: string
+export interface UserInfo {
   email: string
   plan: string
-  quotaUsedBytes: number
-  quotaLimitBytes: number
 }
 
 interface StoreSchema {
-  /** 是否已完成引导流程 */
   onboardingDone: boolean
-  /** 加密存储的 MS API Key（Base64 of encrypted Buffer） */
-  encryptedApiKey?: string
-  /** 高级模式开关 */
   advancedMode: boolean
+  encryptedApiKey?: string
+  userInfo?: UserInfo
+  models: ModelConfig[]
+  instances: InstanceConfig[]
+  conversations: Record<string, ChatMessage[]>
   /** memcore-api 地址（可配置） */
   apiBaseUrl: string
-  /** 算力模型配置列表（不含 Key） */
-  models: ModelConfig[]
-  /** AI 实例列表 */
-  instances: InstanceConfig[]
-  /** 对话历史：{ [instanceId]: MessageRecord[] } */
-  conversations: Record<string, MessageRecord[]>
-  /** 当前登录用户信息 */
-  userInfo?: UserInfoRecord
 }
 
 const store = new Store<StoreSchema>({
   defaults: {
     onboardingDone: false,
     advancedMode: false,
-    apiBaseUrl: 'http://172.236.254.239:31003',
     models: [],
     instances: [],
     conversations: {},
+    apiBaseUrl: 'http://172.236.254.239:31003',
   },
 })
 
-// ── API Base URL ──────────────────────────────────────────────────────────────
+// ── safeStorage 工具 ───────────────────────────────────────────────────────────
 
-export function getApiBaseUrl(): string {
-  return store.get('apiBaseUrl')
-}
-
-export function setApiBaseUrl(url: string): void {
-  store.set('apiBaseUrl', url)
-}
-
-// ── MS API Key（safeStorage 加密） ────────────────────────────────────────────
-
-/**
- * 保存 MS API Key（用 OS keychain 加密）
- */
-export function saveApiKey(key: string): void {
+function encryptValue(value: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
-    // safeStorage 不可用时，调用方应已提前报错，这里不做降级
-    throw new Error('safeStorage 不可用，无法安全存储 API Key')
+    return Buffer.from(value).toString('base64')
   }
-  const encrypted = safeStorage.encryptString(key)
-  store.set('encryptedApiKey', encrypted.toString('base64'))
+  return safeStorage.encryptString(value).toString('base64')
 }
 
-/**
- * 读取 MS API Key
- */
-export function getApiKey(): string | null {
-  const encoded = store.get('encryptedApiKey')
-  if (!encoded) return null
-
+function decryptValue(encoded: string): string | null {
   try {
     const buf = Buffer.from(encoded, 'base64')
     if (!safeStorage.isEncryptionAvailable()) {
-      return null
+      return buf.toString('utf8')
     }
     return safeStorage.decryptString(buf)
   } catch {
@@ -114,11 +85,148 @@ export function getApiKey(): string | null {
   }
 }
 
-/**
- * 清除 API Key
- */
+// ── MS API Key ─────────────────────────────────────────────────────────────────
+
+export function saveApiKey(key: string): void {
+  store.set('encryptedApiKey', encryptValue(key))
+}
+
+export function getApiKey(): string | null {
+  const encoded = store.get('encryptedApiKey')
+  if (!encoded) return null
+  return decryptValue(encoded)
+}
+
 export function clearApiKey(): void {
   store.delete('encryptedApiKey')
+}
+
+// ── 用户信息 ──────────────────────────────────────────────────────────────────
+
+export function saveUserInfo(info: UserInfo): void {
+  store.set('userInfo', info)
+}
+
+export function getUserInfo(): UserInfo | null {
+  return store.get('userInfo') ?? null
+}
+
+// ── 算力模型 ──────────────────────────────────────────────────────────────────
+
+/** Key 存 safeStorage，storeName = "modelKey:{id}" */
+function modelKeyName(id: string): string {
+  return `modelKey_${id}`
+}
+
+export function saveModelKey(id: string, key: string): void {
+  store.set(modelKeyName(id) as any, encryptValue(key))
+}
+
+export function getModelKey(id: string): string | null {
+  const encoded = (store as any).get(modelKeyName(id))
+  if (!encoded) return null
+  return decryptValue(encoded)
+}
+
+export function deleteModelKey(id: string): void {
+  ;(store as any).delete(modelKeyName(id))
+}
+
+export function getModels(): ModelConfig[] {
+  return store.get('models')
+}
+
+export function saveModel(model: ModelConfig): void {
+  const models = getModels()
+  const idx = models.findIndex((m) => m.id === model.id)
+  if (idx >= 0) {
+    models[idx] = model
+  } else {
+    models.push(model)
+  }
+  store.set('models', models)
+}
+
+export function deleteModel(id: string): void {
+  const models = getModels().filter((m) => m.id !== id)
+  store.set('models', models)
+  deleteModelKey(id)
+}
+
+// ── 实例 ──────────────────────────────────────────────────────────────────────
+
+export function getInstances(): InstanceConfig[] {
+  return store.get('instances')
+}
+
+export function saveInstance(instance: InstanceConfig): void {
+  const instances = getInstances()
+  const idx = instances.findIndex((i) => i.id === instance.id)
+  if (idx >= 0) {
+    instances[idx] = instance
+  } else {
+    instances.push(instance)
+  }
+  store.set('instances', instances)
+}
+
+export function deleteInstance(id: string): void {
+  const instances = getInstances().filter((i) => i.id !== id)
+  store.set('instances', instances)
+  // 同时删除对话历史
+  const conversations = store.get('conversations')
+  delete conversations[id]
+  store.set('conversations', conversations)
+}
+
+export function newInstance(data: {
+  name: string
+  modelId: string
+  workspaceId: string
+  systemPrompt?: string
+  tags?: string[]
+}): InstanceConfig {
+  const instance: InstanceConfig = {
+    id: randomUUID(),
+    sessionId: randomUUID(),
+    createdAt: Date.now(),
+    ...data,
+  }
+  saveInstance(instance)
+  return instance
+}
+
+// ── 对话历史 ──────────────────────────────────────────────────────────────────
+
+const MAX_MESSAGES = 500
+
+export function getConversation(instanceId: string): ChatMessage[] {
+  return store.get('conversations')[instanceId] ?? []
+}
+
+export function appendMessage(instanceId: string, msg: ChatMessage): void {
+  const conversations = store.get('conversations')
+  const msgs = conversations[instanceId] ?? []
+  msgs.push(msg)
+  // 超出上限：截掉最旧的 100 条
+  if (msgs.length > MAX_MESSAGES) {
+    msgs.splice(0, 100)
+  }
+  conversations[instanceId] = msgs
+  store.set('conversations', conversations)
+}
+
+export function updateLastAssistantMessage(instanceId: string, content: string): void {
+  const conversations = store.get('conversations')
+  const msgs = conversations[instanceId] ?? []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'assistant') {
+      msgs[i].content = content
+      break
+    }
+  }
+  conversations[instanceId] = msgs
+  store.set('conversations', conversations)
 }
 
 // ── 通用设置 ──────────────────────────────────────────────────────────────────
@@ -139,117 +247,8 @@ export function setAdvancedMode(enabled: boolean): void {
   store.set('advancedMode', enabled)
 }
 
-// ── 用户信息 ──────────────────────────────────────────────────────────────────
-
-export function saveUserInfo(info: UserInfoRecord): void {
-  store.set('userInfo', info)
-}
-
-export function getUserInfo(): UserInfoRecord | undefined {
-  return store.get('userInfo')
-}
-
-export function clearUserInfo(): void {
-  store.delete('userInfo')
-}
-
-// ── 算力模型（配置不含 Key） ──────────────────────────────────────────────────
-
-export function getModels(): ModelConfig[] {
-  return store.get('models')
-}
-
-export function saveModel(model: ModelConfig): void {
-  const models = getModels()
-  const idx = models.findIndex((m) => m.id === model.id)
-  if (idx >= 0) {
-    models[idx] = model
-  } else {
-    models.push(model)
-  }
-  store.set('models', models)
-}
-
-export function deleteModel(id: string): void {
-  const models = getModels().filter((m) => m.id !== id)
-  store.set('models', models)
-}
-
-// ── 模型 Key（safeStorage，key = "modelKey:{modelId}"） ───────────────────────
-
-/**
- * 保存算力模型 API Key
- */
-export function saveModelKey(modelId: string, apiKey: string): void {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw new Error('safeStorage 不可用，无法安全存储模型 Key')
-  }
-  const encrypted = safeStorage.encryptString(apiKey)
-  store.set(`modelKey_${modelId}` as keyof StoreSchema, encrypted.toString('base64') as never)
-}
-
-/**
- * 读取算力模型 API Key
- */
-export function getModelKey(modelId: string): string | null {
-  const encoded = (store as Store<Record<string, string>>).get(`modelKey_${modelId}`)
-  if (!encoded) return null
-  try {
-    const buf = Buffer.from(encoded, 'base64')
-    if (!safeStorage.isEncryptionAvailable()) return null
-    return safeStorage.decryptString(buf)
-  } catch {
-    return null
-  }
-}
-
-/**
- * 删除算力模型 API Key
- */
-export function deleteModelKey(modelId: string): void {
-  (store as Store<Record<string, unknown>>).delete(`modelKey_${modelId}`)
-}
-
-// ── AI 实例 ───────────────────────────────────────────────────────────────────
-
-export function getInstances(): InstanceConfig[] {
-  return store.get('instances')
-}
-
-export function saveInstance(instance: InstanceConfig): void {
-  const instances = getInstances()
-  const idx = instances.findIndex((i) => i.id === instance.id)
-  if (idx >= 0) {
-    instances[idx] = instance
-  } else {
-    instances.push(instance)
-  }
-  store.set('instances', instances)
-}
-
-export function deleteInstance(id: string): void {
-  const instances = getInstances().filter((i) => i.id !== id)
-  store.set('instances', instances)
-}
-
-// ── 对话历史 ──────────────────────────────────────────────────────────────────
-
-export function getConversation(instanceId: string): MessageRecord[] {
-  const convs = store.get('conversations')
-  return convs[instanceId] ?? []
-}
-
-export function appendMessage(instanceId: string, message: MessageRecord): void {
-  const convs = store.get('conversations')
-  const existing = convs[instanceId] ?? []
-  convs[instanceId] = [...existing, message]
-  store.set('conversations', convs)
-}
-
-export function clearConversation(instanceId: string): void {
-  const convs = store.get('conversations')
-  delete convs[instanceId]
-  store.set('conversations', convs)
+export function getApiBaseUrl(): string {
+  return store.get('apiBaseUrl')
 }
 
 export { store }

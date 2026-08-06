@@ -13,8 +13,8 @@
 import { app, BrowserWindow, shell, ipcMain } from 'electron'
 import { join } from 'path'
 
-// 注册所有 IPC handler
-import './ipc'
+// 注册所有 IPC handler（必须在 app.whenReady 之前 import）
+import { activeStreams } from './ipc'
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 
@@ -98,4 +98,39 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+// ── before-quit：有序退出 ──────────────────────────────────────────────────────
+
+let isQuitting = false
+
+app.on('before-quit', (e) => {
+  if (isQuitting) return
+  e.preventDefault()
+  isQuitting = true
+
+  ;(async () => {
+    // Step 1：abort 所有进行中的流
+    for (const [key, controller] of activeStreams) {
+      try { controller.abort() } catch { /* already destroyed */ }
+      activeStreams.delete(key)
+    }
+
+    // Step 2：等待流清空（最多 3s）
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        const interval = setInterval(() => {
+          if (activeStreams.size === 0) { clearInterval(interval); resolve() }
+        }, 100)
+      }),
+      sleep(3000),
+    ])
+
+    // Step 3：flush 本地队列（预留，M2 接入归档后填充）
+    // try { await Promise.race([retryQueue(), sleep(5000)]) } catch (e) { /* log */ }
+
+    // Step 4：强制退出
+    app.exit(0)
+  })()
 })

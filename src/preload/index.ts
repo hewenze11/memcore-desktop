@@ -1,22 +1,14 @@
 /**
- * preload/index.ts — contextBridge 暴露白名单 API 给 renderer
+ * preload/index.ts — contextBridge 白名单 API
  *
- * renderer 通过 window.electronAPI.* 调用，不能直接访问 Node/Electron API。
- * 所有 ipcRenderer.on 订阅都在此封装，并返回 cleanup 函数供 renderer 卸载。
+ * renderer 只能通过 window.electronAPI.* 访问，不能直接用 ipcRenderer。
+ * Key 不出 renderer：所有含 Key 的操作都在主进程执行。
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type {
-  AddModelRequest,
-  CreateInstanceRequest,
-  MessageRole,
-  LlmDeltaPayload,
-  LlmDonePayload,
-  LlmErrorPayload,
-} from '../shared/types'
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // ── Auth ──────────────────────────────────────────────────────────────────
+  // ── Auth ───────────────────────────────────────────────────────────────────
   auth: {
     verify: (key: string) => ipcRenderer.invoke('auth.verify', key),
     getKey: () => ipcRenderer.invoke('auth.getKey'),
@@ -24,73 +16,88 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getUserInfo: () => ipcRenderer.invoke('auth.getUserInfo'),
   },
 
-  // ── Settings ──────────────────────────────────────────────────────────────
+  // ── Settings ───────────────────────────────────────────────────────────────
   settings: {
     getAdvancedMode: () => ipcRenderer.invoke('settings.getAdvancedMode'),
     setAdvancedMode: (enabled: boolean) => ipcRenderer.invoke('settings.setAdvancedMode', enabled),
     getOnboardingDone: () => ipcRenderer.invoke('settings.getOnboardingDone'),
   },
 
-  // ── Models ────────────────────────────────────────────────────────────────
+  // ── Models ─────────────────────────────────────────────────────────────────
   models: {
     list: () => ipcRenderer.invoke('models.list'),
-    add: (model: AddModelRequest) => ipcRenderer.invoke('models.add', model),
+    add: (data: { name: string; baseUrl: string; apiKey: string; modelName: string }) =>
+      ipcRenderer.invoke('models.add', data),
     delete: (id: string) => ipcRenderer.invoke('models.delete', id),
   },
 
-  // ── Instances ─────────────────────────────────────────────────────────────
+  // ── Instances ──────────────────────────────────────────────────────────────
   instances: {
     list: () => ipcRenderer.invoke('instances.list'),
-    create: (data: CreateInstanceRequest) => ipcRenderer.invoke('instances.create', data),
+    create: (data: { name: string; modelId: string; systemPrompt?: string; tags?: string[] }) =>
+      ipcRenderer.invoke('instances.create', data),
     delete: (id: string) => ipcRenderer.invoke('instances.delete', id),
   },
 
-  // ── LLM 流式对话 ──────────────────────────────────────────────────────────
+  // ── Conversations ──────────────────────────────────────────────────────────
+  conversations: {
+    get: (instanceId: string) => ipcRenderer.invoke('conversations.get', instanceId),
+  },
+
+  // ── LLM 流式推理 ────────────────────────────────────────────────────────────
   llm: {
-    streamChat: (
-      requestId: string,
-      modelId: string,
-      messages: { role: MessageRole; content: string }[]
-    ) => ipcRenderer.invoke('llm.streamChat', requestId, modelId, messages),
+    streamChat: (data: {
+      requestId: string
+      instanceId: string
+      modelId: string
+      messages: Array<{ role: string; content: string }>
+      systemPrompt?: string
+    }) => ipcRenderer.invoke('llm.streamChat', data),
 
     abort: (requestId: string) => ipcRenderer.invoke('llm.abort', requestId),
 
     /**
-     * 订阅 llm:delta 事件，返回 cleanup 函数
-     * renderer 在组件卸载时调用 cleanup，避免内存泄漏
+     * 订阅流事件（标准模式：具名函数注销，requestId 过滤）
+     * 返回 cleanup 函数，调用方负责在 done/error 后调用
      */
-    onDelta: (cb: (payload: LlmDeltaPayload) => void): (() => void) => {
-      const listener = (_: Electron.IpcRendererEvent, payload: LlmDeltaPayload) => cb(payload)
-      ipcRenderer.on('llm:delta', listener)
-      return () => ipcRenderer.removeListener('llm:delta', listener)
-    },
+    subscribe: (
+      requestId: string,
+      onDelta: (delta: string) => void,
+      onDone: () => void,
+      onError: (error: string) => void
+    ) => {
+      const listeners = {
+        delta: (_: unknown, data: { requestId: string; delta: string }) => {
+          if (data.requestId !== requestId) return
+          onDelta(data.delta)
+        },
+        done: (_: unknown, data: { requestId: string }) => {
+          if (data.requestId !== requestId) return
+          cleanup()
+          onDone()
+        },
+        error: (_: unknown, data: { requestId: string; error: string }) => {
+          if (data.requestId !== requestId) return
+          cleanup()
+          onError(data.error)
+        },
+      }
 
-    onDone: (cb: (payload: LlmDonePayload) => void): (() => void) => {
-      const listener = (_: Electron.IpcRendererEvent, payload: LlmDonePayload) => cb(payload)
-      ipcRenderer.on('llm:done', listener)
-      return () => ipcRenderer.removeListener('llm:done', listener)
-    },
+      function cleanup() {
+        ipcRenderer.removeListener('llm:delta', listeners.delta)
+        ipcRenderer.removeListener('llm:done', listeners.done)
+        ipcRenderer.removeListener('llm:error', listeners.error)
+      }
 
-    onError: (cb: (payload: LlmErrorPayload) => void): (() => void) => {
-      const listener = (_: Electron.IpcRendererEvent, payload: LlmErrorPayload) => cb(payload)
-      ipcRenderer.on('llm:error', listener)
-      return () => ipcRenderer.removeListener('llm:error', listener)
+      ipcRenderer.on('llm:delta', listeners.delta)
+      ipcRenderer.on('llm:done', listeners.done)
+      ipcRenderer.on('llm:error', listeners.error)
+
+      return cleanup
     },
   },
 
-  // ── Conversations ─────────────────────────────────────────────────────────
-  conversations: {
-    get: (instanceId: string) => ipcRenderer.invoke('conversations.get', instanceId),
-    append: (instanceId: string, message: {
-      id: string
-      role: string
-      content: string
-      ts: number
-    }) => ipcRenderer.invoke('conversations.append', instanceId, message),
-    clear: (instanceId: string) => ipcRenderer.invoke('conversations.clear', instanceId),
-  },
-
-  // ── Window ────────────────────────────────────────────────────────────────
+  // ── Window ─────────────────────────────────────────────────────────────────
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
     maximize: () => ipcRenderer.invoke('window:maximize'),
