@@ -7,6 +7,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { InstanceConfig, ModelConfig, ChatMessage } from '../types'
 import MemoryStatusBar, { type MemoryStatus } from '../components/MemoryStatusBar'
+import MarkdownRenderer from '../components/MarkdownRenderer'
 
 // ── 高级模式：记忆上下文审查面板 ─────────────────────────────────────────────
 
@@ -205,20 +206,72 @@ function Toast({ message, onClose }: { message: string; onClose: () => void }) {
   )
 }
 
+// ── 错误信息解析 ──────────────────────────────────────────────────────────────
+
+/**
+ * P0 修复：错误类型通过主进程传递的结构化前缀判断，不对 error 字符串做 HTTP 状态码正则
+ * 这样即使 AI 回复内容含"401"也不会误触发跳转
+ */
+function isKeyInvalidError(error: string): boolean {
+  // 主进程统一传 AUTH_FAIL / NO_KEY，不再依赖正则猜状态码
+  return error === 'AUTH_FAIL' || error === 'NO_KEY'
+}
+
+function parseStreamError(error?: string): string {
+  if (!error) return '发送失败'
+  if (error === 'NO_KEY') return '未设置 API Key，请先配置'
+  if (error === 'AUTH_FAIL') return 'API Key 已失效，请重新验证'
+  if (error === 'SERVER_ERROR') return '服务器错误，请稍后重试'
+  if (error.startsWith('REQUEST_FAIL_')) return `请求失败（${error.replace('REQUEST_FAIL_', '')}）`
+  if (/fetch|network|ECONNREFUSED|ENOTFOUND|timeout|ETIMEDOUT/i.test(error)) return '网络连接失败，请检查网络'
+  if (error === 'ABORTED') return ''  // 取消不提示
+  return '发送失败'
+}
+
 // ── 消息气泡 ──────────────────────────────────────────────────────────────────
 
 function MessageBubble({ msg }: { msg: ChatMessage & { streaming?: boolean } }) {
   const isUser = msg.role === 'user'
+  const [showTime, setShowTime] = useState(false)
+
+  const timeStr = msg.ts
+    ? new Date(msg.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    : ''
+
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3`}>
-      <div
-        className={`max-w-[70%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
-          isUser
-            ? 'bg-indigo-600 text-white rounded-br-sm'
-            : 'bg-white text-gray-800 shadow-sm rounded-bl-sm'
-        }`}
-      >
-        {msg.content || (msg.streaming ? <span className="opacity-50">▍</span> : null)}
+    <div
+      className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3 group`}
+      onMouseEnter={() => setShowTime(true)}
+      onMouseLeave={() => setShowTime(false)}
+    >
+      <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[75%]`}>
+        <div
+          className={`px-4 py-2.5 rounded-2xl text-sm break-words ${
+            isUser
+              ? 'bg-indigo-600 text-white rounded-br-sm whitespace-pre-wrap leading-relaxed'
+              : 'bg-white text-gray-800 shadow-sm rounded-bl-sm'
+          }`}
+        >
+          {isUser ? (
+            msg.content || (msg.streaming ? <span className="opacity-50">▍</span> : null)
+          ) : (
+            msg.content ? (
+              <MarkdownRenderer content={msg.content} />
+            ) : (
+              msg.streaming ? <span className="opacity-50 text-base">▍</span> : null
+            )
+          )}
+        </div>
+        {/* 时间戳（悬停显示）*/}
+        {timeStr && (
+          <span
+            className={`text-[11px] text-gray-400 mt-0.5 mx-1 transition-opacity duration-150 ${
+              showTime ? 'opacity-100' : 'opacity-0'
+            }`}
+          >
+            {timeStr}
+          </span>
+        )}
       </div>
     </div>
   )
@@ -342,9 +395,9 @@ export default function Main() {
     const requestId = globalThis.crypto.randomUUID()
     currentRequestIdRef.current = requestId
 
-    const userMsg: ChatMessage = { role: 'user', content: userContent, ts: Date.now() }
+    const userMsg: ChatMessage = { role: 'user', content: userContent, ts: Date.now(), msgId: globalThis.crypto.randomUUID() }
     const assistantPlaceholder: ChatMessage & { streaming: boolean } = {
-      role: 'assistant', content: '', ts: Date.now(), streaming: true
+      role: 'assistant', content: '', ts: Date.now(), streaming: true, msgId: globalThis.crypto.randomUUID()
     }
     setMessages((prev) => [...prev, userMsg, assistantPlaceholder])
 
@@ -376,7 +429,14 @@ export default function Main() {
         currentRequestIdRef.current = null
       },
       (error) => {
-        if (error !== 'ABORTED') setToast('发送失败：' + error)
+        if (error !== 'ABORTED') {
+          const userMsg = parseStreamError(error)
+          setToast(userMsg)
+          // Key 失效时跳回 onboarding
+          if (typeof error === 'string' && isKeyInvalidError(error)) {
+            setTimeout(() => navigate('/onboarding'), 2000)
+          }
+        }
         setMessages((prev) => prev.filter((m) => !(m.role === 'assistant' && m.content === '' && (m as any).streaming)))
         setSending(false)
         cleanupRef.current = null
@@ -406,7 +466,11 @@ export default function Main() {
       cleanup()
       cleanupRef.current = null
       currentRequestIdRef.current = null
-      setToast(res.error ?? '发送失败')
+      const errMsg = parseStreamError(res.error)
+      setToast(errMsg)
+      if (res.error && isKeyInvalidError(res.error)) {
+        setTimeout(() => navigate('/onboarding'), 2000)
+      }
       setMessages((prev) => prev.slice(0, -2))
       setSending(false)
     }
@@ -715,8 +779,8 @@ export default function Main() {
               {messages.length === 0 && (
                 <div className="text-center text-xs text-gray-300 py-8">开始对话吧</div>
               )}
-              {messages.map((msg, idx) => (
-                <MessageBubble key={idx} msg={msg} />
+              {messages.map((msg) => (
+                <MessageBubble key={msg.msgId ?? `${msg.role}-${msg.ts}`} msg={msg} />
               ))}
               <div ref={messagesEndRef} />
             </div>

@@ -377,8 +377,15 @@ ipcMain.handle('llm.streamChat', async (event, data: {
       })
 
       if (!res.ok) {
-        const errText = await res.text().catch(() => '')
-        safeSend(sender, 'llm:error', { requestId, error: `模型返回错误 ${res.status}: ${errText.slice(0, 100)}` })
+        // P0 修复：用结构化前缀传递错误类型，防止 renderer 正则误判模型输出内容
+        // renderer 通过前缀判断错误类型，不做原始字符串正则匹配
+        if (res.status === 401 || res.status === 403) {
+          safeSend(sender, 'llm:error', { requestId, error: 'AUTH_FAIL' })
+        } else if (res.status >= 500) {
+          safeSend(sender, 'llm:error', { requestId, error: 'SERVER_ERROR' })
+        } else {
+          safeSend(sender, 'llm:error', { requestId, error: `REQUEST_FAIL_${res.status}` })
+        }
         return
       }
 
