@@ -35,6 +35,16 @@ declare global {
         onStatus: (callback: (data: { status: string; reason?: string; instanceId?: string; context?: string; advancedMode?: boolean; recallVersion?: number }) => void) => () => void
         recallOnly: (data: { instanceId: string; userMessage: string; supplementInstr?: string; recallVersion?: number }) => Promise<{ ok: boolean; error?: string }>
       }
+      dialog: {
+        confirm: (message: string) => Promise<boolean>
+      }
+      memspace: {
+        request: (data: {
+          method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+          path: string
+          body?: unknown
+        }) => Promise<{ ok: boolean; status?: number; data?: unknown; error?: string }>
+      }
       llm: {
         streamChat: (data: {
           requestId: string

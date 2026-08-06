@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Onboarding from './pages/Onboarding'
 import Main from './pages/Main'
 import Settings from './pages/Settings'
+import MemorySpace from './pages/MemorySpace'
 
 export default function App() {
   const [ready, setReady] = useState(false)
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/main" element={<Main />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/memory/:instanceId" element={<MemorySpace />} />
       </Routes>
     </HashRouter>
   )

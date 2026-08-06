@@ -5,7 +5,7 @@
  * renderer 通过 window.electronAPI.* 调用（preload 转发）。
  */
 
-import { ipcMain, safeStorage, WebContents } from 'electron'
+import { ipcMain, safeStorage, WebContents, dialog } from 'electron'
 import { randomUUID } from 'crypto'
 import {
   saveApiKey, getApiKey, clearApiKey,
@@ -469,6 +469,116 @@ ipcMain.handle('llm.abort', async (_event, requestId: string) => {
     activeStreams.delete(requestId)
   }
   return { ok: true }
+})
+
+// ── M4：记忆空间（Memory Space）──────────────────────────────────────────────
+// 所有请求需要 API Key，通过主进程代理，Key 不出 renderer
+
+/**
+ * renderer 被允许访问的 API 路径前缀白名单（P0 安全修复）
+ * 所有条目末尾必须带 /，防止 /memory/docs-evil 等前缀混淆攻击
+ */
+const MEMSPACE_PATH_ALLOWLIST = [
+  '/memory/docs/',
+  '/memory/tags/',
+  '/memory/messages/',
+  '/memory/recent/',
+  '/memory/search/',
+  '/memory/semantic/',
+  '/workspaces/',
+]
+
+/** 精确路径（无尾斜杠）也允许，如 GET /memory/recent */
+const MEMSPACE_EXACT_PATHS = [
+  '/memory/docs',
+  '/memory/tags',
+  '/memory/recent',
+  '/memory/search',
+  '/memory/semantic',
+]
+
+function isAllowedMemspacePath(path: string): boolean {
+  if (typeof path !== 'string' || path.length > 512) return false
+
+  // F1 修复：先 decode 再检查，防止 %2F..%2F 等 URL 编码路径穿越
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(path)
+  } catch {
+    return false // 非法 percent-encoding 直接拒绝
+  }
+
+  // 禁止路径遍历、协议前缀（大小写不敏感）、控制字符、双斜杠
+  if (/\.\./i.test(decoded)) return false
+  if (/^https?:/i.test(decoded)) return false
+  if (/[\x00-\x1F]|\/\//.test(decoded)) return false
+
+  // P2 修复：path 段不应在 decode 后仍含 %XX（防二次编码绕过）
+  // query string 部分（? 后）允许中文等编码，只检查路径段
+  const pathSegment = decoded.split('?')[0]
+  if (/%[0-9a-fA-F]{2}/.test(pathSegment)) return false
+
+  // F2 修复：allowlist 末尾带 / 防前缀混淆，同时允许精确路径（不带尾 /）
+  return (
+    MEMSPACE_PATH_ALLOWLIST.some((prefix) => decoded.startsWith(prefix)) ||
+    MEMSPACE_EXACT_PATHS.includes(pathSegment)
+  )
+}
+
+ipcMain.handle('memspace.request', async (_event, data: {
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  path: string
+  body?: unknown
+}) => {
+  const { method, path, body } = data
+  const key = getApiKey()
+  if (!key) return { ok: false, error: 'NO_KEY' }
+
+  // P0 修复：路径白名单，防止 renderer 借主进程 Key 访问任意后端接口
+  if (!isAllowedMemspacePath(path)) {
+    return { ok: false, error: 'PATH_NOT_ALLOWED' }
+  }
+
+  const baseUrl = getApiBaseUrl()
+  const url = `${baseUrl}${path}`
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      // P2 修复：GET/HEAD 不传 body（语义不规范）
+      body: (method !== 'GET' && method !== 'HEAD' && body !== undefined)
+        ? JSON.stringify(body)
+        : undefined,
+      signal: AbortSignal.timeout(15000),
+    })
+
+    const text = await res.text()
+    let json: unknown
+    try { json = JSON.parse(text) } catch { json = { raw: text } }
+
+    return { ok: res.ok, status: res.status, data: json }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { ok: false, error: msg }
+  }
+})
+
+// ── Dialog ────────────────────────────────────────────────────────────────────
+// Electron renderer 的 confirm() 不可靠（可能直接返回 false），统一走主进程 dialog
+
+ipcMain.handle('dialog.confirm', async (_event, message: string) => {
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    buttons: ['取消', '确认删除'],
+    defaultId: 0,
+    cancelId: 0,
+    message: typeof message === 'string' ? message : '确认执行此操作？',
+  })
+  return response === 1
 })
 
 export { activeStreams }

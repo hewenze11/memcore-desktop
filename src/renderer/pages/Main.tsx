@@ -642,6 +642,16 @@ export default function Main() {
                     {models.find((m) => m.id === inst.modelId)?.name ?? '未知模型'}
                   </p>
                 </div>
+                {/* 记忆空间入口（hover 显示） */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); navigate(`/memory/${inst.id}`) }}
+                  title="记忆空间"
+                  className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-indigo-500 flex-shrink-0 transition-opacity"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18" />
+                  </svg>
+                </button>
                 {/* 删除按钮（hover 显示） */}
                 <button
                   onClick={(e) => handleDeleteInstance(inst.id, e)}

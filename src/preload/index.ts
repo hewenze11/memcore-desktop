@@ -119,6 +119,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }) => ipcRenderer.invoke('memory.recallOnly', data),
   },
 
+  // ── Dialog ─────────────────────────────────────────────────────────────────
+  dialog: {
+    confirm: (message: string) => ipcRenderer.invoke('dialog.confirm', message),
+  },
+
+  // ── M4：记忆空间代理请求 ────────────────────────────────────────────────────
+  memspace: {
+    request: (data: {
+      method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+      path: string
+      body?: unknown
+    }) => ipcRenderer.invoke('memspace.request', data),
+  },
+
   // ── Window ─────────────────────────────────────────────────────────────────
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
