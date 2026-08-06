@@ -1,7 +1,18 @@
+/**
+ * App.tsx — 根路由组件
+ *
+ * 路由规划：
+ *   / → 检查 onboardingDone，重定向到 /onboarding 或 /main
+ *   /onboarding → 引导页（API Key 验证）
+ *   /main → 主界面（实例列表 + 聊天区）
+ *   /settings → 设置页（算力模型管理）
+ */
+
 import React, { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Onboarding from './pages/Onboarding'
 import Main from './pages/Main'
+import Settings from './pages/Settings'
 
 export default function App() {
   const [ready, setReady] = useState(false)
@@ -32,6 +43,7 @@ export default function App() {
         />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/main" element={<Main />} />
+        <Route path="/settings" element={<Settings />} />
       </Routes>
     </HashRouter>
   )
