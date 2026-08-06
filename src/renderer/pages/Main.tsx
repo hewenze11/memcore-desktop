@@ -198,10 +198,14 @@ export default function Main() {
   const handleSend = async () => {
     if (!input.trim() || sending || !selectedId || !selectedInstance || !selectedModel) return
 
-    // P1-2 fix: 先清理可能残留的旧流（防止快速重发竞态）
+    // 先清理可能残留的旧流：cleanup renderer listener + abort 主进程流
     if (cleanupRef.current) {
       cleanupRef.current()
       cleanupRef.current = null
+    }
+    if (currentRequestIdRef.current) {
+      window.electronAPI.llm.abort(currentRequestIdRef.current)
+      currentRequestIdRef.current = null
     }
 
     const userContent = input.trim()
@@ -252,7 +256,8 @@ export default function Main() {
         }
         setMessages((prev) => prev.filter((m) => !(m.role === 'assistant' && m.content === '' && (m as any).streaming)))
         setSending(false)
-        cleanupRef.current = null  // P1-3 fix: onError 路径也清零
+        cleanupRef.current = null
+        currentRequestIdRef.current = null  // P2-2 fix: onError 路径也清零 requestId
       }
     )
     cleanupRef.current = cleanup
@@ -275,6 +280,7 @@ export default function Main() {
     if (!res.ok) {
       cleanup()
       cleanupRef.current = null
+      currentRequestIdRef.current = null
       setToast(res.error ?? '发送失败')
       setMessages((prev) => prev.slice(0, -2))
       setSending(false)
