@@ -106,11 +106,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * status: 'recalling' | 'degraded' | 'archived' | 'queued'
      * 返回 cleanup 函数
      */
-    onStatus: (callback: (data: { status: string; reason?: string; instanceId?: string }) => void) => {
-      const listener = (_: unknown, data: { status: string; reason?: string; instanceId?: string }) => callback(data)
+    onStatus: (callback: (data: { status: string; reason?: string; instanceId?: string; context?: string; advancedMode?: boolean }) => void) => {
+      const listener = (_: unknown, data: { status: string; reason?: string; instanceId?: string; context?: string; advancedMode?: boolean }) => callback(data)
       ipcRenderer.on('memory:status', listener)
       return () => ipcRenderer.removeListener('memory:status', listener)
     },
+    recallOnly: (data: {
+      instanceId: string
+      userMessage: string
+      supplementInstr?: string
+      recallVersion?: number
+    }) => ipcRenderer.invoke('memory.recallOnly', data),
   },
 
   // ── Window ─────────────────────────────────────────────────────────────────

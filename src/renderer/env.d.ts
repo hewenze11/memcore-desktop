@@ -32,7 +32,8 @@ declare global {
         get: (instanceId: string) => Promise<{ ok: boolean; messages: ChatMessage[] }>
       }
       memory: {
-        onStatus: (callback: (data: { status: string; reason?: string; instanceId?: string }) => void) => () => void
+        onStatus: (callback: (data: { status: string; reason?: string; instanceId?: string; context?: string; advancedMode?: boolean; recallVersion?: number }) => void) => () => void
+        recallOnly: (data: { instanceId: string; userMessage: string; supplementInstr?: string; recallVersion?: number }) => Promise<{ ok: boolean; error?: string }>
       }
       llm: {
         streamChat: (data: {

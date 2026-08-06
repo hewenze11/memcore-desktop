@@ -8,6 +8,77 @@ import { useNavigate } from 'react-router-dom'
 import type { InstanceConfig, ModelConfig, ChatMessage } from '../types'
 import MemoryStatusBar, { type MemoryStatus } from '../components/MemoryStatusBar'
 
+// ── 高级模式：记忆上下文审查面板 ─────────────────────────────────────────────
+
+interface AdvancedPanelProps {
+  memoryContext: string
+  supplementInstr: string
+  onConfirm: (editedContext: string) => void
+  onCancel: () => void
+  onRegenerate: (extraInstr: string) => void
+}
+
+function AdvancedPanel({ memoryContext, supplementInstr, onConfirm, onCancel, onRegenerate }: AdvancedPanelProps) {
+  const [editedCtx, setEditedCtx] = useState(memoryContext)
+  const [extraInstr, setExtraInstr] = useState('')
+
+  return (
+    <div className="border-t border-amber-200 bg-amber-50 flex-shrink-0 px-4 py-3 space-y-2">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-medium text-amber-700 flex items-center gap-1">
+          ⚡ 记忆上下文
+          {supplementInstr && (
+            <span className="ml-1 text-[10px] bg-amber-200 text-amber-700 px-1.5 py-0.5 rounded-full">
+              含补充指令
+            </span>
+          )}
+        </span>
+        <button
+          onClick={onCancel}
+          className="text-xs text-gray-400 hover:text-gray-600"
+        >
+          取消
+        </button>
+      </div>
+
+      {/* 记忆上下文可编辑区 */}
+      <textarea
+        value={editedCtx}
+        onChange={(e) => setEditedCtx(e.target.value)}
+        rows={4}
+        placeholder="（此处无记忆上下文，将直连算力模型）"
+        className="w-full text-xs border border-amber-200 bg-white rounded-lg px-2.5 py-2 outline-none focus:ring-1 focus:ring-amber-400 resize-none text-gray-700 leading-relaxed"
+      />
+
+      {/* 补充指令输入 */}
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={extraInstr}
+          onChange={(e) => setExtraInstr(e.target.value)}
+          placeholder="补充召回指令（如：重点关注最近的工作记录）"
+          className="flex-1 text-xs border border-amber-200 bg-white rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-amber-400 text-gray-700"
+        />
+        <button
+          onClick={() => { if (extraInstr.trim()) onRegenerate(extraInstr.trim()) }}
+          disabled={!extraInstr.trim()}
+          className="text-xs px-3 py-1.5 rounded-lg border border-amber-300 text-amber-700 hover:bg-amber-100 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+        >
+          重新生成
+        </button>
+      </div>
+
+      {/* 确认发送 */}
+      <button
+        onClick={() => onConfirm(editedCtx)}
+        className="w-full py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium rounded-lg transition-colors"
+      >
+        用此上下文发送
+      </button>
+    </div>
+  )
+}
+
 // ── 新建实例弹窗 ──────────────────────────────────────────────────────────────
 
 interface NewInstanceModalProps {
@@ -166,6 +237,22 @@ export default function Main() {
   const [showNewModal, setShowNewModal] = useState(false)
   const [toast, setToast] = useState('')
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatus>('idle')
+
+  // ── M3：高级模式状态 ───────────────────────────────────────────────────────
+  const [advancedMode, setAdvancedMode] = useState(false)
+  /** awaitingConfirm：召回完成，等用户审查/确认 */
+  const [awaitingConfirm, setAwaitingConfirm] = useState(false)
+  /** 当前召回到的记忆上下文（可编辑） */
+  const [memoryContext, setMemoryContext] = useState('')
+  /** 临时补充指令（累积追加，发送后清空） */
+  const [supplementInstr, setSupplementInstr] = useState('')
+  /** 缓存待发送的用户消息（recall 完成后才真正发出） */
+  const pendingUserContentRef = useRef<string | null>(null)
+  /** 版本号：每次发起 recall 自增，取消时也自增；订阅里校验，过期事件直接丢弃 */
+  const recallVersionRef = useRef(0)
+  /** recall watchdog timer：30s 后若 recallDone 未收到，自动降级释放 sending */
+  const recallWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
 
@@ -175,10 +262,34 @@ export default function Main() {
       // instanceId 不匹配时忽略（主进程会携带 instanceId）
       if (data.instanceId && data.instanceId !== selectedId) return
 
+      // 版本号校验：recallDone/degraded(advancedMode) 必须匹配当前版本，
+      // 否则是取消后的过期回调，直接丢弃
+      if ((data.status === 'recallDone' || (data.status === 'degraded' && data.advancedMode))
+          && data.recallVersion !== undefined
+          && data.recallVersion !== recallVersionRef.current) {
+        return
+      }
+
       if (data.status === 'recalling') setMemoryStatus('recalling')
+      else if (data.status === 'recallDone') {
+        // 收到 recallDone，清除 watchdog
+        if (recallWatchdogRef.current) { clearTimeout(recallWatchdogRef.current); recallWatchdogRef.current = null }
+        setMemoryStatus('idle')
+        if (data.context !== undefined) {
+          setMemoryContext(data.context)
+          setAwaitingConfirm(true)
+          setSending(false)
+        }
+      }
       else if (data.status === 'degraded') {
+        if (recallWatchdogRef.current) { clearTimeout(recallWatchdogRef.current); recallWatchdogRef.current = null }
         setMemoryStatus('degraded')
         setTimeout(() => setMemoryStatus('idle'), 5000)
+        if (data.advancedMode) {
+          setMemoryContext('')
+          setAwaitingConfirm(true)
+          setSending(false)
+        }
       }
       else if (data.status === 'archived') {
         setMemoryStatus('archived')
@@ -221,34 +332,22 @@ export default function Main() {
   const selectedInstance = instances.find((i) => i.id === selectedId) ?? null
   const selectedModel = models.find((m) => m.id === selectedInstance?.modelId) ?? null
 
-  const handleSend = async () => {
-    if (!input.trim() || sending || !selectedId || !selectedInstance || !selectedModel) return
-
-    // 先清理可能残留的旧流：cleanup renderer listener + abort 主进程流
-    if (cleanupRef.current) {
-      cleanupRef.current()
-      cleanupRef.current = null
-    }
-    if (currentRequestIdRef.current) {
-      window.electronAPI.llm.abort(currentRequestIdRef.current)
-      currentRequestIdRef.current = null
-    }
-
-    const userContent = input.trim()
-    setInput('')
-    setSending(true)
+  /**
+   * 底层发起流式推理（普通模式 or 高级模式确认后调用）
+   * overrideContext: 高级模式用户编辑后的记忆上下文
+   */
+  const doStreamChat = async (userContent: string, overrideContext?: string) => {
+    if (!selectedId || !selectedInstance || !selectedModel) return
 
     const requestId = globalThis.crypto.randomUUID()
     currentRequestIdRef.current = requestId
-    setMemoryStatus('idle')  // 重置状态
+
     const userMsg: ChatMessage = { role: 'user', content: userContent, ts: Date.now() }
     const assistantPlaceholder: ChatMessage & { streaming: boolean } = {
       role: 'assistant', content: '', ts: Date.now(), streaming: true
     }
-
     setMessages((prev) => [...prev, userMsg, assistantPlaceholder])
 
-    // 订阅流事件
     let accumulated = ''
     const cleanup = window.electronAPI.llm.subscribe(
       requestId,
@@ -264,7 +363,6 @@ export default function Main() {
         })
       },
       () => {
-        // done
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
@@ -278,18 +376,15 @@ export default function Main() {
         currentRequestIdRef.current = null
       },
       (error) => {
-        if (error !== 'ABORTED') {
-          setToast('发送失败：' + error)
-        }
+        if (error !== 'ABORTED') setToast('发送失败：' + error)
         setMessages((prev) => prev.filter((m) => !(m.role === 'assistant' && m.content === '' && (m as any).streaming)))
         setSending(false)
         cleanupRef.current = null
-        currentRequestIdRef.current = null  // P2-2 fix: onError 路径也清零 requestId
+        currentRequestIdRef.current = null
       }
     )
     cleanupRef.current = cleanup
 
-    // 构造历史消息（排除刚加的占位符，取最近 20 条）
     const history = messages
       .filter((m) => !((m as any).streaming && m.content === ''))
       .slice(-20)
@@ -302,6 +397,9 @@ export default function Main() {
       modelId: selectedInstance.modelId,
       messages: history,
       systemPrompt: selectedInstance.systemPrompt,
+      overrideContext,
+      // 高级模式已拿到 context，跳过主进程 recall
+      skipRecall: overrideContext !== undefined,
     })
 
     if (!res.ok) {
@@ -312,6 +410,131 @@ export default function Main() {
       setMessages((prev) => prev.slice(0, -2))
       setSending(false)
     }
+  }
+
+  const handleSend = async () => {
+    // 硬 gate：sending / awaitingConfirm 任意一个为 true 都拒绝（防并发、防快速重点）
+    if (!input.trim() || sending || awaitingConfirm || !selectedId || !selectedInstance || !selectedModel) return
+
+    // 先清理旧流
+    if (cleanupRef.current) { cleanupRef.current(); cleanupRef.current = null }
+    if (currentRequestIdRef.current) {
+      window.electronAPI.llm.abort(currentRequestIdRef.current)
+      currentRequestIdRef.current = null
+    }
+
+    const userContent = input.trim()
+    setInput('')
+    setMemoryStatus('idle')
+
+    if (advancedMode) {
+      // 高级模式：先 recall-only，sending 保持 true 直到 awaitingConfirm 或失败
+      pendingUserContentRef.current = userContent
+      // 版本号自增，忽略过期 IPC 回调（取消后的 recallDone 不会触发）
+      recallVersionRef.current += 1
+      setSending(true)
+
+      const currentVersion = recallVersionRef.current
+      const res = await window.electronAPI.memory.recallOnly({
+        instanceId: selectedId,
+        userMessage: userContent,
+        supplementInstr: supplementInstr || undefined,
+        recallVersion: currentVersion,
+      })
+      if (!res.ok) {
+        setMemoryContext('')
+        setAwaitingConfirm(true)
+        setSending(false)
+        return
+      }
+      // recall 成功：sending 保持 true，等 recallDone 事件（带版本号）推入 awaitingConfirm
+      // watchdog：30s 内若未收到 recallDone，自动降级释放 sending
+      if (recallWatchdogRef.current) clearTimeout(recallWatchdogRef.current)
+      recallWatchdogRef.current = setTimeout(() => {
+        // 版本号仍匹配说明 recallDone 还没来，强制降级
+        if (recallVersionRef.current === currentVersion) {
+          setMemoryContext('')
+          setAwaitingConfirm(true)
+          setSending(false)
+          setToast('记忆召回超时，请在面板中直接确认发送')
+        }
+      }, 30000)
+    } else {
+      // 普通模式：直接流式生成（主进程内 recall）
+      setSending(true)
+      await doStreamChat(userContent)
+    }
+  }
+
+  /**
+   * 高级模式：用户确认/编辑上下文后发送
+   * editedContext: 用户编辑过的记忆上下文（传给主进程 overrideContext）
+   */
+  const handleConfirmAndGenerate = async (editedContext: string) => {
+    const userContent = pendingUserContentRef.current
+    if (!userContent) return
+
+    setAwaitingConfirm(false)
+    pendingUserContentRef.current = null
+    setSupplementInstr('')  // 发送后清空临时补充指令
+    setSending(true)
+
+    try {
+      await doStreamChat(userContent, editedContext)
+    } catch (e) {
+      // doStreamChat 内部自行 setToast，这里保证 sending 能被收回
+      console.error('[confirmAndGenerate] unexpected error:', e)
+      setSending(false)
+    }
+  }
+
+  /** 高级模式：取消（回 idle，不归档） */
+  const handleCancelAdvanced = () => {
+    recallVersionRef.current += 1
+    if (recallWatchdogRef.current) { clearTimeout(recallWatchdogRef.current); recallWatchdogRef.current = null }
+    setAwaitingConfirm(false)
+    setMemoryContext('')
+    pendingUserContentRef.current = null
+    setSending(false)
+  }
+
+  /** 高级模式：重新生成（带追加指令重新 recall） */
+  const handleRegenerate = async (extraInstr: string) => {
+    const userContent = pendingUserContentRef.current
+    if (!userContent || !selectedId) return
+
+    setAwaitingConfirm(false)
+    setMemoryContext('')
+    recallVersionRef.current += 1  // 本轮新 recall，自增版本
+    setSending(true)
+
+    // 追加本次指令（累积，不清空）
+    const merged = supplementInstr ? `${supplementInstr}\n${extraInstr}` : extraInstr
+    setSupplementInstr(merged)
+
+    const currentVersion = recallVersionRef.current
+    const res = await window.electronAPI.memory.recallOnly({
+      instanceId: selectedId,
+      userMessage: userContent,
+      supplementInstr: merged || undefined,
+      recallVersion: currentVersion,
+    })
+    if (!res.ok) {
+      setMemoryContext('')
+      setAwaitingConfirm(true)
+      setSending(false)
+      return
+    }
+    // recall 成功：保持 sending=true，等 recallDone 事件（带版本号）推入 awaitingConfirm
+    if (recallWatchdogRef.current) clearTimeout(recallWatchdogRef.current)
+    recallWatchdogRef.current = setTimeout(() => {
+      if (recallVersionRef.current === currentVersion) {
+        setMemoryContext('')
+        setAwaitingConfirm(true)
+        setSending(false)
+        setToast('记忆召回超时，请在面板中直接确认发送')
+      }
+    }, 30000)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -334,8 +557,13 @@ export default function Main() {
       window.electronAPI.llm.abort(currentRequestIdRef.current)
       currentRequestIdRef.current = null
     }
+    recallVersionRef.current += 1
+    if (recallWatchdogRef.current) { clearTimeout(recallWatchdogRef.current); recallWatchdogRef.current = null }
     setSending(false)
     setMemoryStatus('idle')
+    setAwaitingConfirm(false)
+    setMemoryContext('')
+    pendingUserContentRef.current = null
     setSelectedId(id)
   }
 
@@ -451,10 +679,25 @@ export default function Main() {
               <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white text-sm font-medium mr-3">
                 {selectedInstance.name[0]}
               </div>
-              <div>
+              <div className="flex-1">
                 <p className="font-medium text-gray-800 text-sm">{selectedInstance.name}</p>
                 <p className="text-xs text-gray-400">{selectedModel?.name ?? ''}</p>
               </div>
+              {/* ⚡ 高级模式开关 */}
+              <button
+                onClick={() => {
+                  setAdvancedMode((v) => !v)
+                  if (awaitingConfirm) handleCancelAdvanced()
+                }}
+                title={advancedMode ? '关闭高级模式' : '开启高级模式（记忆上下文审查）'}
+                className={`p-1.5 rounded-lg text-base transition-colors ${
+                  advancedMode
+                    ? 'bg-amber-100 text-amber-500'
+                    : 'text-gray-300 hover:text-amber-400 hover:bg-amber-50'
+                }`}
+              >
+                ⚡
+              </button>
             </header>
 
             {/* 消息列表 */}
@@ -471,6 +714,17 @@ export default function Main() {
             {/* 记忆状态栏 */}
             <MemoryStatusBar status={memoryStatus} />
 
+            {/* ── 高级模式：记忆上下文审查侧边板（awaitingConfirm 时展开）── */}
+            {awaitingConfirm && (
+              <AdvancedPanel
+                memoryContext={memoryContext}
+                supplementInstr={supplementInstr}
+                onConfirm={handleConfirmAndGenerate}
+                onCancel={handleCancelAdvanced}
+                onRegenerate={handleRegenerate}
+              />
+            )}
+
             {/* 输入区 */}
             <div className="px-4 py-3 border-t border-gray-100 bg-white flex-shrink-0">
               <div className="flex items-end gap-3">
@@ -478,14 +732,14 @@ export default function Main() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
+                  placeholder={awaitingConfirm ? '请先审查记忆上下文...' : '输入消息... (Enter 发送，Shift+Enter 换行)'}
                   rows={1}
-                  disabled={sending}
+                  disabled={sending || awaitingConfirm}
                   className="flex-1 resize-none px-3.5 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all max-h-32 disabled:bg-gray-50 disabled:text-gray-400"
                 />
                 <button
                   onClick={handleSend}
-                  disabled={sending || !input.trim()}
+                  disabled={sending || !input.trim() || awaitingConfirm}
                   className="flex-shrink-0 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400 text-white text-sm rounded-xl transition-colors"
                 >
                   {sending ? (

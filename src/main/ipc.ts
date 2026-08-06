@@ -212,6 +212,50 @@ ipcMain.handle('conversations.get', async (_event, instanceId: string) => {
   return { ok: true, messages: getConversation(instanceId) }
 })
 
+// ── 高级模式：仅 recall，结果通过 memory:status{recallDone} 事件推回 ──────────
+
+ipcMain.handle('memory.recallOnly', async (event, data: {
+  instanceId: string
+  userMessage: string
+  supplementInstr?: string
+  recallVersion?: number
+}) => {
+  const { instanceId, userMessage, supplementInstr, recallVersion } = data
+  const sender = event.sender
+
+  const instances = getInstances()
+  const instance = instances.find((i) => i.id === instanceId)
+  if (!instance) return { ok: false, error: '实例不存在' }
+
+  safeSend(sender, 'memory:status', { status: 'recalling', instanceId })
+
+  // 构造 recall userMessage：原消息 + 补充指令
+  const recallMessage = supplementInstr
+    ? `${userMessage}\n\n[补充指令]\n${supplementInstr}`
+    : userMessage
+
+  const result = await recall({ workspaceId: instance.workspaceId, userMessage: recallMessage })
+
+  if (result.ok) {
+    safeSend(sender, 'memory:status', {
+      status: 'recallDone',
+      instanceId,
+      context: result.context,
+      recallVersion,  // 透传回 renderer 做版本号校验
+    })
+    return { ok: true }
+  } else {
+    safeSend(sender, 'memory:status', {
+      status: 'degraded',
+      instanceId,
+      reason: result.reason,
+      advancedMode: true,
+      recallVersion,
+    })
+    return { ok: false, error: result.reason }
+  }
+})
+
 // ── LLM 流式推理 ──────────────────────────────────────────────────────────────
 
 ipcMain.handle('llm.streamChat', async (event, data: {
