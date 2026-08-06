@@ -4,8 +4,9 @@
   "description": "MemCore Electron desktop client",
   "main": "dist/main/index.js",
   "scripts": {
-    "dev": "tsc && electron dist/main/index.js",
-    "build": "tsc",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win"
@@ -14,14 +15,25 @@
   "author": "Cayan",
   "license": "MIT",
   "dependencies": {
-    "form-data": "^4.0.0",
-    "keytar": "^7.9.0"
+    "electron-store": "^8.2.0",
+    "form-data": "^4.0.0"
   },
   "devDependencies": {
-    "@types/form-data": "^2.5.0",
     "@types/node": "^20.19.43",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/react-router-dom": "^5.3.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.21",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3",
-    "typescript": "^5.9.3"
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.5.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.19"
   }
 }
