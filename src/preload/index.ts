@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       modelId: string
       messages: Array<{ role: string; content: string }>
       systemPrompt?: string
+      skipRecall?: boolean
+      overrideContext?: string
     }) => ipcRenderer.invoke('llm.streamChat', data),
 
     abort: (requestId: string) => ipcRenderer.invoke('llm.abort', requestId),
@@ -94,6 +96,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('llm:error', listeners.error)
 
       return cleanup
+    },
+  },
+
+  // ── Memory 状态事件 ────────────────────────────────────────────────────────
+  memory: {
+    /**
+     * 订阅记忆状态变化事件
+     * status: 'recalling' | 'degraded' | 'archived' | 'queued'
+     * 返回 cleanup 函数
+     */
+    onStatus: (callback: (data: { status: string; reason?: string; instanceId?: string }) => void) => {
+      const listener = (_: unknown, data: { status: string; reason?: string; instanceId?: string }) => callback(data)
+      ipcRenderer.on('memory:status', listener)
+      return () => ipcRenderer.removeListener('memory:status', listener)
     },
   },
 

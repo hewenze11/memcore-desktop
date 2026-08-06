@@ -41,6 +41,17 @@ export interface UserInfo {
   plan: string
 }
 
+export interface ArchiveItem {
+  turnId: string
+  instanceId: string
+  workspaceId: string
+  sessionId: string
+  userContent: string
+  assistantContent: string
+  retryCount: number
+  createdAt: number
+}
+
 interface StoreSchema {
   onboardingDone: boolean
   advancedMode: boolean
@@ -49,8 +60,12 @@ interface StoreSchema {
   models: ModelConfig[]
   instances: InstanceConfig[]
   conversations: Record<string, ChatMessage[]>
+  /** 归档重试队列，按 instanceId 分组 */
+  archiveQueue: Record<string, ArchiveItem[]>
   /** memcore-api 地址（可配置） */
   apiBaseUrl: string
+  /** SuperModel 地址（可配置） */
+  supermodelUrl: string
 }
 
 const store = new Store<StoreSchema>({
@@ -60,7 +75,9 @@ const store = new Store<StoreSchema>({
     models: [],
     instances: [],
     conversations: {},
+    archiveQueue: {},
     apiBaseUrl: 'http://172.236.254.239:31003',
+    supermodelUrl: 'http://172.236.254.239:31000',
   },
 })
 
@@ -249,6 +266,44 @@ export function setAdvancedMode(enabled: boolean): void {
 
 export function getApiBaseUrl(): string {
   return store.get('apiBaseUrl')
+}
+
+export function getSupermodelUrl(): string {
+  return store.get('supermodelUrl')
+}
+
+// ── 归档重试队列 ──────────────────────────────────────────────────────────────
+
+export function getArchiveQueue(): Record<string, ArchiveItem[]> {
+  return store.get('archiveQueue')
+}
+
+export function enqueueArchive(item: ArchiveItem): void {
+  const queue = getArchiveQueue()
+  const list = queue[item.instanceId] ?? []
+  // 幂等：同 turnId 已在队列则不重复添加
+  if (!list.find((i) => i.turnId === item.turnId)) {
+    list.push(item)
+    queue[item.instanceId] = list
+    store.set('archiveQueue', queue)
+  }
+}
+
+export function removeFromQueue(instanceId: string, turnId: string): void {
+  const queue = getArchiveQueue()
+  const list = (queue[instanceId] ?? []).filter((i) => i.turnId !== turnId)
+  queue[instanceId] = list
+  store.set('archiveQueue', queue)
+}
+
+export function incrementRetry(instanceId: string, turnId: string): void {
+  const queue = getArchiveQueue()
+  const list = queue[instanceId] ?? []
+  const item = list.find((i) => i.turnId === turnId)
+  if (item) {
+    item.retryCount += 1
+    store.set('archiveQueue', queue)
+  }
 }
 
 export { store }

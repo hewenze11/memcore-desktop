@@ -31,6 +31,9 @@ declare global {
       conversations: {
         get: (instanceId: string) => Promise<{ ok: boolean; messages: ChatMessage[] }>
       }
+      memory: {
+        onStatus: (callback: (data: { status: string; reason?: string; instanceId?: string }) => void) => () => void
+      }
       llm: {
         streamChat: (data: {
           requestId: string
@@ -38,6 +41,8 @@ declare global {
           modelId: string
           messages: Array<{ role: string; content: string }>
           systemPrompt?: string
+          skipRecall?: boolean
+          overrideContext?: string
         }) => Promise<{ ok: boolean; error?: string }>
         abort: (requestId: string) => Promise<{ ok: boolean }>
         subscribe: (

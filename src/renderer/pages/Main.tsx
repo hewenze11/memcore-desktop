@@ -6,6 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { InstanceConfig, ModelConfig, ChatMessage } from '../types'
+import MemoryStatusBar, { type MemoryStatus } from '../components/MemoryStatusBar'
 
 // ── 新建实例弹窗 ──────────────────────────────────────────────────────────────
 
@@ -164,8 +165,33 @@ export default function Main() {
   const [sending, setSending] = useState(false)
   const [showNewModal, setShowNewModal] = useState(false)
   const [toast, setToast] = useState('')
+  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus>('idle')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
+
+  // 订阅记忆状态事件（只处理当前选中实例的事件，防止跨实例污染）
+  useEffect(() => {
+    const cleanup = window.electronAPI.memory.onStatus((data) => {
+      // instanceId 不匹配时忽略（主进程会携带 instanceId）
+      if (data.instanceId && data.instanceId !== selectedId) return
+
+      if (data.status === 'recalling') setMemoryStatus('recalling')
+      else if (data.status === 'degraded') {
+        setMemoryStatus('degraded')
+        setTimeout(() => setMemoryStatus('idle'), 5000)
+      }
+      else if (data.status === 'archived') {
+        setMemoryStatus('archived')
+        setTimeout(() => setMemoryStatus('idle'), 3000)
+      } else if (data.status === 'queued') {
+        setMemoryStatus('queued')
+        setTimeout(() => setMemoryStatus('idle'), 8000)
+      } else {
+        console.warn('[memory:status] unknown status:', data.status)
+      }
+    })
+    return cleanup
+  }, [selectedId])
 
   // 加载实例和模型列表
   const reload = useCallback(async () => {
@@ -214,6 +240,7 @@ export default function Main() {
 
     const requestId = globalThis.crypto.randomUUID()
     currentRequestIdRef.current = requestId
+    setMemoryStatus('idle')  // 重置状态
     const userMsg: ChatMessage = { role: 'user', content: userContent, ts: Date.now() }
     const assistantPlaceholder: ChatMessage & { streaming: boolean } = {
       role: 'assistant', content: '', ts: Date.now(), streaming: true
@@ -308,6 +335,7 @@ export default function Main() {
       currentRequestIdRef.current = null
     }
     setSending(false)
+    setMemoryStatus('idle')
     setSelectedId(id)
   }
 
@@ -439,6 +467,9 @@ export default function Main() {
               ))}
               <div ref={messagesEndRef} />
             </div>
+
+            {/* 记忆状态栏 */}
+            <MemoryStatusBar status={memoryStatus} />
 
             {/* 输入区 */}
             <div className="px-4 py-3 border-t border-gray-100 bg-white flex-shrink-0">

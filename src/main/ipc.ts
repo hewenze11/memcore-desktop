@@ -17,7 +17,9 @@ import {
   getAdvancedMode, setAdvancedMode,
   getApiBaseUrl,
   ModelConfig,
+  ArchiveItem,
 } from './store'
+import { recall, archiveAsync } from './memory'
 
 // ── 流管理 ────────────────────────────────────────────────────────────────────
 
@@ -218,8 +220,14 @@ ipcMain.handle('llm.streamChat', async (event, data: {
   modelId: string
   messages: Array<{ role: string; content: string }>
   systemPrompt?: string
+  /** 跳过记忆（高级模式用户手动指定上下文时传 true） */
+  skipRecall?: boolean
+  /** 高级模式：用户编辑过的记忆上下文（跳过 recall 直接注入） */
+  overrideContext?: string
 }) => {
-  const { requestId, instanceId, modelId, messages, systemPrompt } = data
+  const { requestId, instanceId, modelId, messages, systemPrompt, skipRecall, overrideContext } = data
+  // turnId 由主进程生成，不信任 renderer 传入（防伪造/碰撞）
+  const turnId = randomUUID()
 
   // requestId 唯一性检查
   if (activeStreams.has(requestId)) {
@@ -237,15 +245,55 @@ ipcMain.handle('llm.streamChat', async (event, data: {
     return { ok: false, error: '找不到模型配置' }
   }
 
+  // 查实例获取 workspaceId/sessionId（用于 recall/archive）
+  const instances = getInstances()
+  const instance = instances.find((i) => i.id === instanceId)
+
   const controller = new AbortController()
   activeStreams.set(requestId, controller)
 
   const sender = event.sender
 
-  // 构造消息列表（可选 system prompt）
+  // ── Step 1：记忆召回（异步，8s 超时降级）──────────────────────────────────
+
+  let memoryContext = ''
+  let memoryStatus: 'ok' | 'degraded' | 'skipped' = 'skipped'
+
+  if (instance && !skipRecall && !overrideContext) {
+    // 通知 renderer 开始召回（携带 instanceId，防止跨实例污染）
+    safeSend(sender, 'memory:status', { status: 'recalling', instanceId })
+
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')
+    const recallResult = await recall({
+      workspaceId: instance.workspaceId,
+      userMessage: lastUserMsg?.content ?? '',
+    })
+
+    if (recallResult.ok) {
+      memoryContext = recallResult.context
+      memoryStatus = 'ok'
+    } else {
+      // 超时或服务错误 → 降级直连算力模型
+      memoryStatus = 'degraded'
+      safeSend(sender, 'memory:status', { status: 'degraded', reason: recallResult.reason, instanceId })
+    }
+  } else if (overrideContext) {
+    // 高级模式：用户编辑的上下文直接注入
+    memoryContext = overrideContext
+    memoryStatus = 'ok'
+  }
+
+  // ── Step 2：构造消息列表（system prompt + 记忆上下文）──────────────────────
+
   const fullMessages: Array<{ role: string; content: string }> = []
-  if (systemPrompt) {
-    fullMessages.push({ role: 'system', content: systemPrompt })
+  let systemContent = systemPrompt ?? ''
+  if (memoryContext) {
+    systemContent = systemContent
+      ? `${systemContent}\n\n---\n${memoryContext}`
+      : memoryContext
+  }
+  if (systemContent) {
+    fullMessages.push({ role: 'system', content: systemContent })
   }
   fullMessages.push(...messages)
 
@@ -260,8 +308,11 @@ ipcMain.handle('llm.streamChat', async (event, data: {
 
   // 固化此次请求的上下文（不信后续 payload 变化，防止 instanceId 串台）
   const boundInstanceId = instanceId
+  const boundTurnId = turnId
+  const boundInstance = instance ?? null
   const boundModelUrl = model.baseUrl + '/chat/completions'
   const boundModelName = model.modelName
+  const boundLastUserContent = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
 
   // 发起流式请求（在后台运行，不 await）
   ;(async () => {
@@ -324,6 +375,29 @@ ipcMain.handle('llm.streamChat', async (event, data: {
       // 用固化的 instanceId 写入（防止串台）
       updateLastAssistantMessage(boundInstanceId, accumulated)
       safeSend(sender, 'llm:done', { requestId })
+
+      // ── Step 3：异步归档（fire-and-forget）──────────────────────────────
+      if (boundInstance && accumulated && boundLastUserContent) {
+        const archiveItem: ArchiveItem = {
+          turnId: boundTurnId,
+          instanceId: boundInstanceId,
+          workspaceId: boundInstance.workspaceId,
+          sessionId: boundInstance.sessionId,
+          userContent: boundLastUserContent,
+          assistantContent: accumulated,
+          retryCount: 0,
+          createdAt: Date.now(),
+        }
+        archiveAsync(archiveItem).then((result) => {
+          safeSend(sender, 'memory:status', {
+            status: result === 'ok' ? 'archived' : 'queued',
+            instanceId: boundInstanceId,
+          })
+        }).catch((err) => {
+          console.error('[archive] unexpected error:', err)
+          safeSend(sender, 'memory:status', { status: 'queued', instanceId: boundInstanceId })
+        })
+      }
     } catch (e: unknown) {
       // 用 error.name 判断 abort，不依赖字符串
       if (e instanceof Error && e.name === 'AbortError') {

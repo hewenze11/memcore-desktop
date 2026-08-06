@@ -15,6 +15,7 @@ import { join } from 'path'
 
 // 注册所有 IPC handler（必须在 app.whenReady 之前 import）
 import { activeStreams } from './ipc'
+import { retryQueue } from './memory'
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 
@@ -87,6 +88,9 @@ ipcMain.handle('window:close', () => {
 app.whenReady().then(() => {
   createMainWindow()
 
+  // 启动时后台静默重试归档队列
+  retryQueue().catch(() => { /* 静默失败，下次再试 */ })
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow()
@@ -127,8 +131,12 @@ app.on('before-quit', (e) => {
       sleep(3000),
     ])
 
-    // Step 3：flush 本地队列（预留，M2 接入归档后填充）
-    // try { await Promise.race([retryQueue(), sleep(5000)]) } catch (e) { /* log */ }
+    // Step 3：flush 本地归档队列（最多 5s，超时留磁盘）
+    try {
+      await Promise.race([retryQueue(), sleep(5000)])
+    } catch (e) {
+      console.error('before_quit_flush_failed', e)
+    }
 
     // Step 4：强制退出
     app.exit(0)
