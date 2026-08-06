@@ -114,6 +114,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 上传安装包到测试服务器（dev + main 都上传，供官网下载）
+      # dev  → /var/www/downloads/dev/MemCore-Setup.exe
+      # main → /var/www/downloads/MemCore-Setup.exe（官网正式下载地址）
+      - name: Upload installer to server (dev)
+        if: github.ref == 'refs/heads/dev'
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p 22 172.236.254.239 >> ~/.ssh/known_hosts 2>/dev/null
+          EXE=$(ls release/*.exe | head -1)
+          ssh -i ~/.ssh/id_rsa -p 22 root@172.236.254.239 "mkdir -p /var/www/downloads/dev"
+          scp -i ~/.ssh/id_rsa -P 22 "$EXE" root@172.236.254.239:/var/www/downloads/dev/MemCore-Setup.exe
+
+      - name: Upload installer to server (main)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p 22 172.236.254.239 >> ~/.ssh/known_hosts 2>/dev/null
+          EXE=$(ls release/*.exe | head -1)
+          ssh -i ~/.ssh/id_rsa -p 22 root@172.236.254.239 "mkdir -p /var/www/downloads"
+          scp -i ~/.ssh/id_rsa -P 22 "$EXE" root@172.236.254.239:/var/www/downloads/MemCore-Setup.exe
+
       # 飞书通知（使用 Python 构造 JSON，避免 bash 字符串乱码和换行问题）
       - name: Notify Feishu on success
         if: success()
