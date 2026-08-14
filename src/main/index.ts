@@ -14,6 +14,7 @@
 import { app, BrowserWindow, Menu, shell, ipcMain } from 'electron'
 import * as path from 'path'
 import { loadConfig } from './keychain'
+import logger from './logger'
 
 // 注册所有 IPC handler
 import './ipc'
@@ -53,8 +54,10 @@ async function createMainWindow(): Promise<void> {
     },
   })
 
-  mainWindow.loadURL(dashboardUrl).catch(() => {
+  logger.info('Loading dashboard', { url: dashboardUrl })
+  mainWindow.loadURL(dashboardUrl).catch((err: Error) => {
     // Dashboard 加载失败时，显示离线提示页
+    logger.error('Dashboard load failed, showing offline page', { url: dashboardUrl, error: err.message })
     mainWindow!.loadFile(path.join(__dirname, '../../src/renderer/offline.html'))
   })
 
@@ -184,6 +187,23 @@ function buildMenu(): void {
           label: '打开官网',
           click: () => shell.openExternal('https://cayan.ai'),
         },
+        { type: 'separator' },
+        {
+          label: '打开日志文件夹',
+          click: () => {
+            const { shell: s } = require('electron')
+            s.openPath(logger.getLogDir())
+          },
+        },
+        {
+          label: '复制日志路径',
+          click: () => {
+            const { clipboard } = require('electron')
+            clipboard.writeText(logger.getLogPath())
+            const { dialog: d } = require('electron')
+            d.showMessageBox({ type: 'info', title: '已复制', message: '当前日志文件路径已复制到剪贴板', buttons: ['确定'] })
+          },
+        },
       ],
     },
   ]
@@ -211,6 +231,8 @@ ipcMain.handle('app:openSettings', () => {
 // ── App 生命周期 ───────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  logger.purgeOldLogs()
+  logger.info('App starting', { version: app.getVersion(), platform: process.platform })
   buildMenu()
   await createMainWindow()
 
