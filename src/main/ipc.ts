@@ -16,6 +16,7 @@ import * as https from 'https'
 import * as http from 'http'
 import { loadConfig, saveConfig, AppConfig } from './keychain'
 import FormData from 'form-data'
+import logger from './logger'
 
 // ── 允许的 API host 白名单（防 config:save 劫持凭据）
 const ALLOWED_API_HOSTS = new Set([
@@ -62,6 +63,7 @@ ipcMain.handle('config:save', async (_event, patch: Partial<AppConfig>) => {
       throw new Error(`invalid apiBaseUrl: ${patch.apiBaseUrl}`)
     }
   }
+  logger.info('config:save', { keys: Object.keys(patch) })
   await saveConfig(patch)
   return { ok: true }
 })
@@ -126,6 +128,7 @@ ipcMain.handle(
     if (params.sessionId) form.append('session_id', params.sessionId)
 
     const apiUrl = new URL('/memory/upload-image', config.apiBaseUrl)
+    logger.info('image:upload', { fileName, sizeMB: (fileBuffer.length / 1024 / 1024).toFixed(2) })
     const responseBody = await httpRequest({
       url: apiUrl.toString(),
       method: 'POST',
@@ -188,6 +191,7 @@ ipcMain.handle('image:toBase64', async (_event, url: string) => {
 
 ipcMain.handle('auth:login', async (_event, params: { email: string; code: string }) => {
   const config = await loadConfig()
+  logger.info('auth:login attempt', { email: params.email })
   const loginUrl = new URL('/api/auth/login', config.apiBaseUrl)
   const body = JSON.stringify({ email: params.email, code: params.code })
   const responseBody = await httpRequest({
@@ -265,7 +269,7 @@ function httpRequest(opts: RequestOptions): Promise<string> {
       }
     )
 
-    req.on('error', reject)
+    req.on('error', (err) => { logger.error('httpRequest error', { url: opts.url, error: err.message }); reject(err) })
     req.on('timeout', () => { req.destroy(); reject(new Error('request timeout')) })
     if (opts.body) req.write(opts.body)
     req.end()
