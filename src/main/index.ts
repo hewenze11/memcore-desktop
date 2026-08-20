@@ -22,7 +22,7 @@ import './ipc'
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 
 // memory-spider-web 测试环境地址（可通过 keychain config 覆盖）
-const DEFAULT_DASHBOARD_URL = 'http://172.236.254.239:31013'
+const DEFAULT_DASHBOARD_URL = 'https://dev.memspider.com'
 
 // ── 窗口引用 ──────────────────────────────────────────────────────────────────
 
@@ -34,7 +34,7 @@ let settingsWindow: BrowserWindow | null = null
 async function createMainWindow(): Promise<void> {
   const config = await loadConfig()
   const dashboardUrl = config.apiBaseUrl
-    ? config.apiBaseUrl.replace(':31010', ':31013')
+    ? config.apiBaseUrl.replace('api-dev.memspider.com', 'dev.memspider.com').replace('api.memspider.com', 'memspider.com').replace(':31010', ':31013')
     : DEFAULT_DASHBOARD_URL
 
   mainWindow = new BrowserWindow({
@@ -217,7 +217,7 @@ function buildMenu(): void {
 ipcMain.handle('app:reloadDashboard', async () => {
   const config = await loadConfig()
   const dashboardUrl = config.apiBaseUrl
-    ? config.apiBaseUrl.replace(':31010', ':31013')
+    ? config.apiBaseUrl.replace('api-dev.memspider.com', 'dev.memspider.com').replace('api.memspider.com', 'memspider.com').replace(':31010', ':31013')
     : DEFAULT_DASHBOARD_URL
   mainWindow?.loadURL(dashboardUrl)
   return { ok: true }
