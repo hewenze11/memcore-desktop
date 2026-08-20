@@ -588,4 +588,14 @@ ipcMain.handle('dialog.confirm', async (_event, message: string) => {
   return response === 1
 })
 
+// ── Shell ──────────────────────────────────────────────────────────────────────
+import { shell } from 'electron'
+ipcMain.handle('shell.openExternal', async (_event, url: string) => {
+  if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+    await shell.openExternal(url)
+    return { ok: true }
+  }
+  return { ok: false, error: 'Invalid URL' }
+})
+
 export { activeStreams }
