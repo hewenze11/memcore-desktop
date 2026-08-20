@@ -70,12 +70,15 @@ ipcMain.handle('auth.loginWithCode', async (_event, email: string, code: string)
   }
   const baseUrl = getApiBaseUrl()
   try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10000)
     const res = await fetch(`${baseUrl}/auth/email/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, code }),
-      signal: AbortSignal.timeout(10000),
+      signal: controller.signal,
     })
+    clearTimeout(timer)
     const data = await res.json() as { access_token?: string; user_id?: string; email?: string; is_new_user?: boolean; error?: string }
     if (!res.ok || !data.access_token) {
       return { ok: false, error: data.error || '验证码不正确' }
@@ -86,10 +89,10 @@ ipcMain.handle('auth.loginWithCode', async (_event, email: string, code: string)
     return { ok: true, email: data.email || email }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (msg.includes('timeout') || msg.includes('abort')) {
+    if (msg.includes('abort') || msg.includes('timeout') || msg.includes('ETIMEDOUT')) {
       return { ok: false, error: '连接超时，请检查网络' }
     }
-    return { ok: false, error: '网络错误，请检查连接' }
+    return { ok: false, error: `网络错误: ${msg}` }
   }
 })
 
