@@ -98,24 +98,39 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 自动更新官网下载链接
+      # 自动更新官网下载链接（通过 GitHub API Python 脚本，跨仓库）
       - name: Update download page in memory-spider-web
         if: github.ref == 'refs/heads/main' && success()
-        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WEB_PAT: ${{ secrets.WEB_UPDATE_PAT }}
+          APP_VER: ${{ env.APP_VERSION }}
+          GIT_SHA: ${{ env.SHORT_SHA }}
+        shell: python
         run: |
-          TAG="v${APP_VERSION}-${SHORT_SHA}"
-          NEW_URL="https://github.com/hewenze11/memcore-desktop/releases/download/${TAG}/MemCore.Setup.1.0.0.exe"
-          git clone https://x-access-token:${GH_TOKEN}@github.com/hewenze11/memory-spider-web.git /tmp/web
-          cd /tmp/web
-          git config user.email "ci@cayan.ai"
-          git config user.name "CI Bot"
-          DLFILE="src/app/download/page.tsx"
-          sed -i -E "s|https://github.com/hewenze11/memcore-desktop/releases/download/[^/]+/MemCore[.]Setup[.]1[.]0[.]0[.]exe|${NEW_URL}|g" "${DLFILE}"
-          git add "${DLFILE}"
-          git diff --staged --quiet || git commit -m "ci: update memcore download URL to ${TAG} [skip ci]"
-          git push origin main
+          import urllib.request, json, base64, os, re as _re
+          pat = os.environ['WEB_PAT']
+          ver = os.environ['APP_VER']
+          sha_val = os.environ['GIT_SHA']
+          tag = 'v' + ver + '-' + sha_val
+          new_url = 'https://github.com/hewenze11/memcore-desktop/releases/download/' + tag + '/MemCore.Setup.1.0.0.exe'
+          hdrs = {'Authorization': 'token ' + pat, 'Content-Type': 'application/json', 'User-Agent': 'ci'}
+          fpath = 'src/app/download/page.tsx'
+          api = 'https://api.github.com/repos/hewenze11/memory-spider-web/contents/' + fpath + '?ref=main'
+          rr = json.loads(urllib.request.urlopen(urllib.request.Request(api, headers=hdrs), timeout=10).read())
+          file_sha = rr['sha']
+          old = base64.b64decode(rr['content'].replace('\n', '')).decode()
+          pattern = r'https://github\.com/hewenze11/memcore-desktop/releases/download/[^/]+/MemCore\.Setup\.1\.0\.0\.exe'
+          updated = _re.sub(pattern, new_url, old)
+          if updated == old:
+              print('No change needed')
+          else:
+              b64 = base64.b64encode(updated.encode()).decode()
+              msg = 'ci: update memcore download URL to ' + tag + ' [skip ci]'
+              body = json.dumps({'message': msg, 'content': b64, 'sha': file_sha, 'branch': 'main'}).encode()
+              put_url = 'https://api.github.com/repos/hewenze11/memory-spider-web/contents/' + fpath
+              req2 = urllib.request.Request(put_url, data=body, headers=hdrs, method='PUT')
+              res = json.loads(urllib.request.urlopen(req2, timeout=10).read())
+              print('Updated to ' + tag + ', commit: ' + res['commit']['sha'][:7])
 
       # 飞书通知
       - name: Notify Feishu on success
