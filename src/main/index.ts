@@ -34,8 +34,7 @@ function createMainWindow(): void {
     minWidth: 900,
     minHeight: 600,
     title: 'MemCore',
-    frame: false,
-    titleBarStyle: 'hidden',
+    frame: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
