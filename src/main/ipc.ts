@@ -1,314 +1,591 @@
 /**
- * ipc.ts — IPC handler 注册（安全加固版）
+ * ipc.ts — IPC handler 注册（白名单模式）
  *
- * 安全措施：
- * - image:upload：只允许上传 image:pick 返回过的路径（session 白名单，用完即删）
- * - image:toBase64：URL 必须是合法 http/https scheme + 允许的 host，防 SSRF
- * - config:save：apiBaseUrl 的 hostname 只允许白名单内的 host
- * - httpRequest：响应体限制 1MB，防内存耗尽
- * - image:toBase64：限制 5MB，防 OOM
+ * 所有带 API Key 的 HTTP 请求在此发出，Key 不出主进程。
+ * renderer 通过 window.electronAPI.* 调用（preload 转发）。
  */
 
-import { ipcMain, dialog } from 'electron'
-import * as fs from 'fs'
-import * as path from 'path'
-import * as https from 'https'
-import * as http from 'http'
-import { loadConfig, saveConfig, AppConfig } from './keychain'
-import FormData from 'form-data'
-import logger from './logger'
+import { ipcMain, safeStorage, WebContents, dialog } from 'electron'
+import { randomUUID } from 'crypto'
+import {
+  saveApiKey, getApiKey, clearApiKey,
+  saveUserInfo, getUserInfo,
+  getModels, saveModel, deleteModel, getModelKey, saveModelKey,
+  getInstances, newInstance, deleteInstance,
+  getConversation, appendMessage, updateLastAssistantMessage,
+  getOnboardingDone, setOnboardingDone,
+  getAdvancedMode, setAdvancedMode,
+  getApiBaseUrl,
+  ModelConfig,
+  ArchiveItem,
+} from './store'
+import { recall, archiveAsync } from './memory'
 
-// ── 允许的 API host 白名单（防 config:save 劫持凭据）
-const ALLOWED_API_HOSTS = new Set([
-  '172.236.254.239',
-  '172.236.254.94',
-  'api.cayan.ai',
-  'localhost',
-  '127.0.0.1',
-])
+// ── 流管理 ────────────────────────────────────────────────────────────────────
 
-// ── 允许的图片下载 host 白名单（防 SSRF）
-// MinIO 跑在数据库专机，内网地址
-const ALLOWED_IMAGE_HOSTS = new Set([
-  '172.236.224.19',  // 数据库专机 MinIO
-  '172.236.254.239', // 测试集群（开发期）
-  '172.236.254.94',  // 生产集群
-  'oss.cayan.ai',    // 未来 CDN 域名占位
-])
-
-// ── session 级别文件路径白名单（image:pick → image:upload 一次性消费）
-const allowedUploadPaths = new Set<string>()
-
-// 响应体上限：1MB（JSON 响应足够，防恶意服务器撑爆内存）
-const MAX_RESPONSE_BYTES = 1 * 1024 * 1024
-// 图片下载上限：5MB（转 base64 后约 6.7MB，3张约 20MB，在安全范围内）
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024
-
-// ── 配置 ──────────────────────────────────────────────────────────────────────
-
-ipcMain.handle('config:load', async () => {
-  return await loadConfig()
-})
-
-ipcMain.handle('config:save', async (_event, patch: Partial<AppConfig>) => {
-  // P1-1 修复：校验 apiBaseUrl 的 hostname，防止被篡改为恶意服务器
-  if (patch.apiBaseUrl !== undefined) {
-    try {
-      const parsed = new URL(patch.apiBaseUrl)
-      if (!ALLOWED_API_HOSTS.has(parsed.hostname)) {
-        throw new Error(`apiBaseUrl host not allowed: ${parsed.hostname}`)
-      }
-    } catch (e: any) {
-      if (e.message.includes('not allowed')) throw e
-      throw new Error(`invalid apiBaseUrl: ${patch.apiBaseUrl}`)
-    }
-  }
-  logger.info('config:save', { keys: Object.keys(patch) })
-  await saveConfig(patch)
-  return { ok: true }
-})
-
-// ── 图片 ──────────────────────────────────────────────────────────────────────
-
-/**
- * P0-1 修复：文件选择由主进程弹对话框，返回的路径注册到 session 白名单。
- * image:upload 只允许上传白名单内的路径，用完即删。
- */
-ipcMain.handle('image:pick', async (_event, opts?: { multiple?: boolean }) => {
-  const result = await dialog.showOpenDialog({
-    title: '选择图片',
-    properties: opts?.multiple ? ['openFile', 'multiSelections'] : ['openFile'],
-    filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }],
-  })
-  if (result.canceled || result.filePaths.length === 0) return null
-
-  const paths = result.filePaths.slice(0, 3)
-  // 注册到 session 白名单（只有 image:pick 返回的路径才可上传）
-  paths.forEach(fp => allowedUploadPaths.add(fp))
-
-  return paths.map(fp => ({
-    filePath: fp,
-    fileName: path.basename(fp),
-    sizeMB: +(fs.statSync(fp).size / 1024 / 1024).toFixed(2),
-  }))
-})
-
-/**
- * P0-1 修复：只允许上传 image:pick 登记过的路径，用完即从白名单删除（防重放）
- */
-ipcMain.handle(
-  'image:upload',
-  async (
-    _event,
-    params: { filePath: string; workspaceId?: string; note?: string; sessionId?: string }
-  ) => {
-    const config = await loadConfig()
-    if (!config.jwtToken) throw new Error('not logged in')
-
-    // 路径白名单校验
-    if (!allowedUploadPaths.has(params.filePath)) {
-      throw new Error('Unauthorized file path: must be selected via image:pick')
-    }
-    // 用完即删（防重放攻击）
-    allowedUploadPaths.delete(params.filePath)
-
-    const fileBuffer = fs.readFileSync(params.filePath)
-    const fileName = path.basename(params.filePath)
-    const ext = path.extname(fileName).toLowerCase().slice(1) as string
-    const mimeMap: Record<string, string> = {
-      jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-      gif: 'image/gif', webp: 'image/webp',
-    }
-    const mimeType = mimeMap[ext] || 'application/octet-stream'
-
-    const form = new FormData()
-    form.append('file', fileBuffer, { filename: fileName, contentType: mimeType })
-    if (params.workspaceId) form.append('workspace_id', params.workspaceId)
-    if (params.note) form.append('note', params.note)
-    if (params.sessionId) form.append('session_id', params.sessionId)
-
-    const apiUrl = new URL('/memory/upload-image', config.apiBaseUrl)
-    logger.info('image:upload', { fileName, sizeMB: (fileBuffer.length / 1024 / 1024).toFixed(2) })
-    const responseBody = await httpRequest({
-      url: apiUrl.toString(),
-      method: 'POST',
-      headers: {
-        ...form.getHeaders(),
-        Authorization: `Bearer ${config.jwtToken}`,
-      },
-      body: form.getBuffer(),
-    })
-    return JSON.parse(responseBody)
-  }
-)
-
-/**
- * 获取图片预签名 URL（15分钟有效）
- */
-ipcMain.handle('image:getUrl', async (_event, objectKey: string) => {
-  const config = await loadConfig()
-  if (!config.jwtToken) throw new Error('not logged in')
-
-  const apiUrl = new URL(
-    `/memory/image-url?object_key=${encodeURIComponent(objectKey)}`,
-    config.apiBaseUrl
-  )
-  const responseBody = await httpRequest({
-    url: apiUrl.toString(),
-    method: 'GET',
-    headers: { Authorization: `Bearer ${config.jwtToken}` },
-  })
-  return JSON.parse(responseBody)
-})
-
-/**
- * P0-3 修复：URL 白名单校验，防 SSRF
- * P1-2 修复：限制 5MB，防 OOM
- * P2 修复：根据响应 Content-Type 生成正确的 data URL prefix
- */
-ipcMain.handle('image:toBase64', async (_event, url: string) => {
-  // SSRF 防护：只允许 http/https，且 hostname 在白名单内
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    throw new Error('invalid URL')
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Only http/https URLs are allowed')
-  }
-  if (!ALLOWED_IMAGE_HOSTS.has(parsed.hostname)) {
-    throw new Error(`Image host not allowed: ${parsed.hostname}`)
-  }
-
-  const { data, contentType } = await httpDownloadWithType(url, MAX_IMAGE_BYTES)
-  // 使用实际 Content-Type 避免 MIME 错误
-  const mime = contentType?.split(';')[0]?.trim() || 'image/jpeg'
-  return `data:${mime};base64,${data.toString('base64')}`
-})
-
-// ── Auth ──────────────────────────────────────────────────────────────────────
-
-ipcMain.handle('auth:login', async (_event, params: { email: string; code: string }) => {
-  const config = await loadConfig()
-  logger.info('auth:login attempt', { email: params.email })
-  const loginUrl = new URL('/api/auth/login', config.apiBaseUrl)
-  const body = JSON.stringify({ email: params.email, code: params.code })
-  const responseBody = await httpRequest({
-    url: loginUrl.toString(),
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: Buffer.from(body),
-  })
-  const result = JSON.parse(responseBody)
-  if (result.token) {
-    await saveConfig({ jwtToken: result.token })
-  }
-  return result
-})
-
-ipcMain.handle('auth:logout', async () => {
-  await saveConfig({ jwtToken: null })
-  return { ok: true }
-})
-
-ipcMain.handle('auth:status', async () => {
-  const config = await loadConfig()
-  return { loggedIn: !!config.jwtToken }
-})
+/** 正在进行的流：requestId → AbortController */
+const activeStreams = new Map<string, AbortController>()
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
 
-interface RequestOptions {
-  url: string
-  method: string
-  headers?: Record<string, string>
-  body?: Buffer
+function safeSend(sender: WebContents, channel: string, data: unknown): void {
+  if (!sender.isDestroyed()) {
+    sender.send(channel, data)
+  }
 }
 
-/**
- * P1-4 修复：响应体限制 MAX_RESPONSE_BYTES（1MB），防恶意服务器撑爆内存
- */
-function httpRequest(opts: RequestOptions): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(opts.url)
-    const isHttps = url.protocol === 'https:'
-    const lib = isHttps ? https : http
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
-    const req = lib.request(
-      {
-        hostname: url.hostname,
-        port: url.port || (isHttps ? 443 : 80),
-        path: url.pathname + url.search,
-        method: opts.method,
-        headers: opts.headers || {},
-        timeout: 30000,
+ipcMain.handle('auth.verify', async (_event, key: string) => {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return { ok: false, error: '系统加密不可用，无法安全存储 API Key' }
+  }
+  if (!key || typeof key !== 'string' || key.trim().length < 8) {
+    return { ok: false, error: 'API Key 格式不正确' }
+  }
+  const trimmed = key.trim()
+  const baseUrl = getApiBaseUrl()
+  try {
+    const res = await fetch(`${baseUrl}/user/me`, {
+      headers: { Authorization: `Bearer ${trimmed}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) {
+      return { ok: false, error: 'API Key 不正确，请重新获取' }
+    }
+    const data = await res.json() as { email: string; plan: string }
+    saveApiKey(trimmed)
+    saveUserInfo({ email: data.email, plan: data.plan })
+    setOnboardingDone(true)
+    return { ok: true, email: data.email, plan: data.plan }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('timeout') || msg.includes('abort')) {
+      return { ok: false, error: '连接超时，请检查网络' }
+    }
+    return { ok: false, error: '网络错误，请检查连接' }
+  }
+})
+
+ipcMain.handle('auth.getKey', async () => {
+  const key = getApiKey()
+  if (!key) return { ok: false, key: null }
+  const masked = key.slice(0, 4) + '****' + key.slice(-4)
+  return { ok: true, key: masked }
+})
+
+ipcMain.handle('auth.clear', async () => {
+  clearApiKey()
+  setOnboardingDone(false)
+  return { ok: true }
+})
+
+ipcMain.handle('auth.getUserInfo', async () => {
+  return { ok: true, userInfo: getUserInfo() }
+})
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+ipcMain.handle('settings.getAdvancedMode', async () => {
+  return { ok: true, value: getAdvancedMode() }
+})
+
+ipcMain.handle('settings.setAdvancedMode', async (_event, enabled: boolean) => {
+  setAdvancedMode(enabled)
+  return { ok: true }
+})
+
+ipcMain.handle('settings.getOnboardingDone', async () => {
+  return { ok: true, value: getOnboardingDone() }
+})
+
+// ── Models ────────────────────────────────────────────────────────────────────
+
+ipcMain.handle('models.list', async () => {
+  return { ok: true, models: getModels() }
+})
+
+ipcMain.handle('models.add', async (_event, data: {
+  name: string; baseUrl: string; apiKey: string; modelName: string
+}) => {
+  const { name, baseUrl, apiKey, modelName } = data
+  if (!name || !baseUrl || !apiKey || !modelName) {
+    return { ok: false, error: '所有字段均为必填' }
+  }
+  // 测试连接：发一个最小请求验证 Key 可用
+  try {
+    const url = baseUrl.replace(/\/$/, '') + '/chat/completions'
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
       },
-      (res) => {
-        const chunks: Buffer[] = []
-        let totalBytes = 0
-
-        res.on('data', (chunk: Buffer) => {
-          totalBytes += chunk.length
-          if (totalBytes > MAX_RESPONSE_BYTES) {
-            req.destroy()
-            reject(new Error(`Response too large (>${MAX_RESPONSE_BYTES} bytes)`))
-            return
-          }
-          chunks.push(chunk)
-        })
-
-        res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8')
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new Error(`HTTP ${res.statusCode}: ${body}`))
-          } else {
-            resolve(body)
-          }
-        })
+      body: JSON.stringify({
+        model: modelName,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 1,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(15000),
+    })
+    // 拦截所有非成功响应
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, error: 'API Key 验证失败，请检查' }
       }
-    )
+      if (res.status === 404) {
+        return { ok: false, error: '模型名称或 Base URL 不正确' }
+      }
+      return { ok: false, error: `服务端错误 (${res.status})，请稍后重试` }
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('timeout') || msg.includes('abort')) {
+      return { ok: false, error: '连接超时，请检查 Base URL' }
+    }
+    return { ok: false, error: '无法连接到模型服务，请检查 Base URL' }
+  }
 
-    req.on('error', (err) => { logger.error('httpRequest error', { url: opts.url, error: err.message }); reject(err) })
-    req.on('timeout', () => { req.destroy(); reject(new Error('request timeout')) })
-    if (opts.body) req.write(opts.body)
-    req.end()
-  })
-}
+  const id = randomUUID()
+  const model: ModelConfig = { id, name, baseUrl: baseUrl.replace(/\/$/, ''), modelName }
+  saveModel(model)
+  saveModelKey(id, apiKey)
+  return { ok: true, model }
+})
 
-/**
- * 下载二进制数据，带大小限制，返回 Buffer + Content-Type
- */
-function httpDownloadWithType(
-  url: string,
-  maxBytes: number
-): Promise<{ data: Buffer; contentType: string | null }> {
-  return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(url)
-    const isHttps = parsedUrl.protocol === 'https:'
-    const lib = isHttps ? https : http
+ipcMain.handle('models.delete', async (_event, id: string) => {
+  deleteModel(id)
+  return { ok: true }
+})
 
-    const req = lib.get(url, (res) => {
-      const contentType = res.headers['content-type'] || null
-      const chunks: Buffer[] = []
-      let total = 0
+// ── Instances ─────────────────────────────────────────────────────────────────
 
-      res.on('data', (chunk: Buffer) => {
-        total += chunk.length
-        if (total > maxBytes) {
-          req.destroy()
-          reject(new Error(`Image too large: exceeds ${maxBytes} bytes`))
-          return
-        }
-        chunks.push(chunk)
-      })
+ipcMain.handle('instances.list', async () => {
+  return { ok: true, instances: getInstances() }
+})
 
-      res.on('end', () => resolve({ data: Buffer.concat(chunks), contentType }))
+ipcMain.handle('instances.create', async (_event, data: {
+  name: string; modelId: string; systemPrompt?: string; tags?: string[]
+}) => {
+  const msKey = getApiKey()
+  if (!msKey) return { ok: false, error: '未找到 MS API Key，请重新登录' }
+  const baseUrl = getApiBaseUrl()
+
+  // 调 memcore-api 创建 workspace
+  try {
+    const res = await fetch(`${baseUrl}/workspaces`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${msKey}`,
+      },
+      body: JSON.stringify({ name: data.name }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string }
+      return { ok: false, error: err.error ?? '创建实例失败，请重试' }
+    }
+    const ws = await res.json() as { id: string }
+    const instance = newInstance({
+      name: data.name,
+      modelId: data.modelId,
+      workspaceId: ws.id,
+      systemPrompt: data.systemPrompt,
+      tags: data.tags,
+    })
+    return { ok: true, instance }
+  } catch {
+    return { ok: false, error: '网络错误，请检查连接' }
+  }
+})
+
+ipcMain.handle('instances.delete', async (_event, id: string) => {
+  deleteInstance(id)
+  return { ok: true }
+})
+
+// ── Conversations ─────────────────────────────────────────────────────────────
+
+ipcMain.handle('conversations.get', async (_event, instanceId: string) => {
+  return { ok: true, messages: getConversation(instanceId) }
+})
+
+// ── 高级模式：仅 recall，结果通过 memory:status{recallDone} 事件推回 ──────────
+
+ipcMain.handle('memory.recallOnly', async (event, data: {
+  instanceId: string
+  userMessage: string
+  supplementInstr?: string
+  recallVersion?: number
+}) => {
+  const { instanceId, userMessage, supplementInstr, recallVersion } = data
+  const sender = event.sender
+
+  const instances = getInstances()
+  const instance = instances.find((i) => i.id === instanceId)
+  if (!instance) return { ok: false, error: '实例不存在' }
+
+  safeSend(sender, 'memory:status', { status: 'recalling', instanceId })
+
+  // 构造 recall userMessage：原消息 + 补充指令
+  const recallMessage = supplementInstr
+    ? `${userMessage}\n\n[补充指令]\n${supplementInstr}`
+    : userMessage
+
+  const result = await recall({ workspaceId: instance.workspaceId, userMessage: recallMessage })
+
+  if (result.ok) {
+    safeSend(sender, 'memory:status', {
+      status: 'recallDone',
+      instanceId,
+      context: result.context,
+      recallVersion,  // 透传回 renderer 做版本号校验
+    })
+    return { ok: true }
+  } else {
+    safeSend(sender, 'memory:status', {
+      status: 'degraded',
+      instanceId,
+      reason: result.reason,
+      advancedMode: true,
+      recallVersion,
+    })
+    return { ok: false, error: result.reason }
+  }
+})
+
+// ── LLM 流式推理 ──────────────────────────────────────────────────────────────
+
+ipcMain.handle('llm.streamChat', async (event, data: {
+  requestId: string
+  instanceId: string
+  modelId: string
+  messages: Array<{ role: string; content: string }>
+  systemPrompt?: string
+  /** 跳过记忆（高级模式用户手动指定上下文时传 true） */
+  skipRecall?: boolean
+  /** 高级模式：用户编辑过的记忆上下文（跳过 recall 直接注入） */
+  overrideContext?: string
+}) => {
+  const { requestId, instanceId, modelId, messages, systemPrompt, skipRecall, overrideContext } = data
+  // turnId 由主进程生成，不信任 renderer 传入（防伪造/碰撞）
+  const turnId = randomUUID()
+
+  // requestId 唯一性检查
+  if (activeStreams.has(requestId)) {
+    return { ok: false, error: 'DUPLICATE_REQUEST_ID' }
+  }
+
+  const modelKey = getModelKey(modelId)
+  if (!modelKey) {
+    return { ok: false, error: '找不到模型 Key，请在设置页重新添加模型' }
+  }
+
+  const models = getModels()
+  const model = models.find((m) => m.id === modelId)
+  if (!model) {
+    return { ok: false, error: '找不到模型配置' }
+  }
+
+  // 查实例获取 workspaceId/sessionId（用于 recall/archive）
+  const instances = getInstances()
+  const instance = instances.find((i) => i.id === instanceId)
+
+  const controller = new AbortController()
+  activeStreams.set(requestId, controller)
+
+  const sender = event.sender
+
+  // ── Step 1：记忆召回（异步，8s 超时降级）──────────────────────────────────
+
+  let memoryContext = ''
+  let memoryStatus: 'ok' | 'degraded' | 'skipped' = 'skipped'
+
+  if (instance && !skipRecall && !overrideContext) {
+    // 通知 renderer 开始召回（携带 instanceId，防止跨实例污染）
+    safeSend(sender, 'memory:status', { status: 'recalling', instanceId })
+
+    const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')
+    const recallResult = await recall({
+      workspaceId: instance.workspaceId,
+      userMessage: lastUserMsg?.content ?? '',
     })
 
-    req.on('error', reject)
-    req.on('timeout', () => { req.destroy(); reject(new Error('download timeout')) })
-  })
+    if (recallResult.ok) {
+      memoryContext = recallResult.context
+      memoryStatus = 'ok'
+    } else {
+      // 超时或服务错误 → 降级直连算力模型
+      memoryStatus = 'degraded'
+      safeSend(sender, 'memory:status', { status: 'degraded', reason: recallResult.reason, instanceId })
+    }
+  } else if (overrideContext) {
+    // 高级模式：用户编辑的上下文直接注入
+    memoryContext = overrideContext
+    memoryStatus = 'ok'
+  }
+
+  // ── Step 2：构造消息列表（system prompt + 记忆上下文）──────────────────────
+
+  const fullMessages: Array<{ role: string; content: string }> = []
+  let systemContent = systemPrompt ?? ''
+  if (memoryContext) {
+    systemContent = systemContent
+      ? `${systemContent}\n\n---\n${memoryContext}`
+      : memoryContext
+  }
+  if (systemContent) {
+    fullMessages.push({ role: 'system', content: systemContent })
+  }
+  fullMessages.push(...messages)
+
+  // 记录用户消息
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')
+  if (lastUserMsg) {
+    appendMessage(instanceId, { role: 'user', content: lastUserMsg.content, ts: Date.now() })
+  }
+
+  // 占位 assistant 消息（流式追加）
+  appendMessage(instanceId, { role: 'assistant', content: '', ts: Date.now() })
+
+  // 固化此次请求的上下文（不信后续 payload 变化，防止 instanceId 串台）
+  const boundInstanceId = instanceId
+  const boundTurnId = turnId
+  const boundInstance = instance ?? null
+  const boundModelUrl = model.baseUrl + '/chat/completions'
+  const boundModelName = model.modelName
+  const boundLastUserContent = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+
+  // 发起流式请求（在后台运行，不 await）
+  ;(async () => {
+    let accumulated = ''
+    try {
+      const res = await fetch(boundModelUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${modelKey}`,
+        },
+        body: JSON.stringify({
+          model: boundModelName,
+          messages: fullMessages,
+          stream: true,
+        }),
+        signal: controller.signal,
+      })
+
+      if (!res.ok) {
+        // P0 修复：用结构化前缀传递错误类型，防止 renderer 正则误判模型输出内容
+        // renderer 通过前缀判断错误类型，不做原始字符串正则匹配
+        if (res.status === 401 || res.status === 403) {
+          safeSend(sender, 'llm:error', { requestId, error: 'AUTH_FAIL' })
+        } else if (res.status >= 500) {
+          safeSend(sender, 'llm:error', { requestId, error: 'SERVER_ERROR' })
+        } else {
+          safeSend(sender, 'llm:error', { requestId, error: `REQUEST_FAIL_${res.status}` })
+        }
+        return
+      }
+
+      if (!res.body) {
+        safeSend(sender, 'llm:error', { requestId, error: '模型返回空响应' })
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed || trimmed === 'data: [DONE]') continue
+          if (!trimmed.startsWith('data: ')) continue
+          try {
+            const json = JSON.parse(trimmed.slice(6))
+            const delta = json.choices?.[0]?.delta?.content
+            if (delta) {
+              accumulated += delta
+              safeSend(sender, 'llm:delta', { requestId, delta })
+            }
+          } catch {
+            // 忽略解析失败的行
+          }
+        }
+      }
+
+      // 用固化的 instanceId 写入（防止串台）
+      updateLastAssistantMessage(boundInstanceId, accumulated)
+      safeSend(sender, 'llm:done', { requestId })
+
+      // ── Step 3：异步归档（fire-and-forget）──────────────────────────────
+      if (boundInstance && accumulated && boundLastUserContent) {
+        const archiveItem: ArchiveItem = {
+          turnId: boundTurnId,
+          instanceId: boundInstanceId,
+          workspaceId: boundInstance.workspaceId,
+          sessionId: boundInstance.sessionId,
+          userContent: boundLastUserContent,
+          assistantContent: accumulated,
+          retryCount: 0,
+          createdAt: Date.now(),
+        }
+        archiveAsync(archiveItem).then((result) => {
+          safeSend(sender, 'memory:status', {
+            status: result === 'ok' ? 'archived' : 'queued',
+            instanceId: boundInstanceId,
+          })
+        }).catch((err) => {
+          console.error('[archive] unexpected error:', err)
+          safeSend(sender, 'memory:status', { status: 'queued', instanceId: boundInstanceId })
+        })
+      }
+    } catch (e: unknown) {
+      // 用 error.name 判断 abort，不依赖字符串
+      if (e instanceof Error && e.name === 'AbortError') {
+        safeSend(sender, 'llm:error', { requestId, error: 'ABORTED' })
+      } else {
+        safeSend(sender, 'llm:error', { requestId, error: e instanceof Error ? e.message : String(e) })
+      }
+    } finally {
+      // finally 确保 activeStreams 在所有路径下都清理
+      activeStreams.delete(requestId)
+    }
+  })()
+
+  return { ok: true }
+})
+
+ipcMain.handle('llm.abort', async (_event, requestId: string) => {
+  const controller = activeStreams.get(requestId)
+  if (controller) {
+    try {
+      controller.abort()
+    } catch {
+      // 已 destroy，忽略
+    }
+    activeStreams.delete(requestId)
+  }
+  return { ok: true }
+})
+
+// ── M4：记忆空间（Memory Space）──────────────────────────────────────────────
+// 所有请求需要 API Key，通过主进程代理，Key 不出 renderer
+
+/**
+ * renderer 被允许访问的 API 路径前缀白名单（P0 安全修复）
+ * 所有条目末尾必须带 /，防止 /memory/docs-evil 等前缀混淆攻击
+ */
+const MEMSPACE_PATH_ALLOWLIST = [
+  '/memory/docs/',
+  '/memory/tags/',
+  '/memory/messages/',
+  '/memory/recent/',
+  '/memory/search/',
+  '/memory/semantic/',
+  '/workspaces/',
+]
+
+/** 精确路径（无尾斜杠）也允许，如 GET /memory/recent */
+const MEMSPACE_EXACT_PATHS = [
+  '/memory/docs',
+  '/memory/tags',
+  '/memory/recent',
+  '/memory/search',
+  '/memory/semantic',
+]
+
+function isAllowedMemspacePath(path: string): boolean {
+  if (typeof path !== 'string' || path.length > 512) return false
+
+  // F1 修复：先 decode 再检查，防止 %2F..%2F 等 URL 编码路径穿越
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(path)
+  } catch {
+    return false // 非法 percent-encoding 直接拒绝
+  }
+
+  // 禁止路径遍历、协议前缀（大小写不敏感）、控制字符、双斜杠
+  if (/\.\./i.test(decoded)) return false
+  if (/^https?:/i.test(decoded)) return false
+  if (/[\x00-\x1F]|\/\//.test(decoded)) return false
+
+  // P2 修复：path 段不应在 decode 后仍含 %XX（防二次编码绕过）
+  // query string 部分（? 后）允许中文等编码，只检查路径段
+  const pathSegment = decoded.split('?')[0]
+  if (/%[0-9a-fA-F]{2}/.test(pathSegment)) return false
+
+  // F2 修复：allowlist 末尾带 / 防前缀混淆，同时允许精确路径（不带尾 /）
+  return (
+    MEMSPACE_PATH_ALLOWLIST.some((prefix) => decoded.startsWith(prefix)) ||
+    MEMSPACE_EXACT_PATHS.includes(pathSegment)
+  )
 }
 
-export {}
+ipcMain.handle('memspace.request', async (_event, data: {
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  path: string
+  body?: unknown
+}) => {
+  const { method, path, body } = data
+  const key = getApiKey()
+  if (!key) return { ok: false, error: 'NO_KEY' }
+
+  // P0 修复：路径白名单，防止 renderer 借主进程 Key 访问任意后端接口
+  if (!isAllowedMemspacePath(path)) {
+    return { ok: false, error: 'PATH_NOT_ALLOWED' }
+  }
+
+  const baseUrl = getApiBaseUrl()
+  const url = `${baseUrl}${path}`
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      // P2 修复：GET/HEAD 不传 body（语义不规范）
+      body: (method !== 'GET' && method !== 'HEAD' && body !== undefined)
+        ? JSON.stringify(body)
+        : undefined,
+      signal: AbortSignal.timeout(15000),
+    })
+
+    const text = await res.text()
+    let json: unknown
+    try { json = JSON.parse(text) } catch { json = { raw: text } }
+
+    return { ok: res.ok, status: res.status, data: json }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { ok: false, error: msg }
+  }
+})
+
+// ── Dialog ────────────────────────────────────────────────────────────────────
+// Electron renderer 的 confirm() 不可靠（可能直接返回 false），统一走主进程 dialog
+
+ipcMain.handle('dialog.confirm', async (_event, message: string) => {
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    buttons: ['取消', '确认删除'],
+    defaultId: 0,
+    cancelId: 0,
+    message: typeof message === 'string' ? message : '确认执行此操作？',
+  })
+  return response === 1
+})
+
+export { activeStreams }
