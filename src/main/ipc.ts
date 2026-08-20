@@ -36,28 +36,51 @@ function safeSend(sender: WebContents, channel: string, data: unknown): void {
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
-ipcMain.handle('auth.verify', async (_event, key: string) => {
-  if (!safeStorage.isEncryptionAvailable()) {
-    return { ok: false, error: '系统加密不可用，无法安全存储 API Key' }
-  }
-  if (!key || typeof key !== 'string' || key.trim().length < 8) {
-    return { ok: false, error: 'API Key 格式不正确' }
-  }
-  const trimmed = key.trim()
+// ── 发送验证码 ────────────────────────────────────────────────────────────────
+ipcMain.handle('auth.sendCode', async (_event, phone: string) => {
   const baseUrl = getApiBaseUrl()
   try {
-    const res = await fetch(`${baseUrl}/user/me`, {
-      headers: { Authorization: `Bearer ${trimmed}` },
+    const res = await fetch(`${baseUrl}/auth/sms/send-code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
       signal: AbortSignal.timeout(10000),
     })
+    const data = await res.json() as { ok?: boolean; error?: string; retry_after?: number }
     if (!res.ok) {
-      return { ok: false, error: 'API Key 不正确，请重新获取' }
+      return { ok: false, error: data.error || '发送失败' }
     }
-    const data = await res.json() as { email: string; plan: string }
-    saveApiKey(trimmed)
-    saveUserInfo({ email: data.email, plan: data.plan })
+    return { ok: true }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('timeout') || msg.includes('abort')) {
+      return { ok: false, error: '连接超时，请检查网络' }
+    }
+    return { ok: false, error: '网络错误，请检查连接' }
+  }
+})
+
+// ── 验证码登录 ────────────────────────────────────────────────────────────────
+ipcMain.handle('auth.loginWithCode', async (_event, phone: string, code: string) => {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return { ok: false, error: '系统加密不可用' }
+  }
+  const baseUrl = getApiBaseUrl()
+  try {
+    const res = await fetch(`${baseUrl}/auth/sms/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, code }),
+      signal: AbortSignal.timeout(10000),
+    })
+    const data = await res.json() as { token?: string; user_id?: string; phone?: string; is_new_user?: boolean; error?: string }
+    if (!res.ok || !data.token) {
+      return { ok: false, error: data.error || '验证码不正确' }
+    }
+    saveApiKey(data.token)
+    saveUserInfo({ email: data.phone || phone, plan: 'free' })
     setOnboardingDone(true)
-    return { ok: true, email: data.email, plan: data.plan }
+    return { ok: true, phone: data.phone || phone }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('timeout') || msg.includes('abort')) {
