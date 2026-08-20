@@ -139,4 +139,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     maximize: () => ipcRenderer.invoke('window:maximize'),
     close: () => ipcRenderer.invoke('window:close'),
   },
+
+  // ── Shell ─────────────────────────────────────────────────────────────────
+  shell: {
+    openExternal: (url: string) => ipcRenderer.invoke('shell.openExternal', url),
+  },
 })
