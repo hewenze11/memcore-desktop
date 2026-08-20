@@ -80,7 +80,11 @@ export default function Onboarding() {
         {/* 注册提示 */}
         <p className="mt-6 text-center text-xs text-gray-400">
           还没有账号？
-          <span className="text-indigo-500 cursor-not-allowed ml-1">请前往官网注册</span>
+          <a
+            href="#"
+            className="text-indigo-500 hover:underline ml-1 cursor-pointer"
+            onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://dev.memspider.com') }}
+          >请前往官网注册</a>
         </p>
       </div>
     </div>
