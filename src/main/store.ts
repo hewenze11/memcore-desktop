@@ -76,7 +76,7 @@ const store = new Store<StoreSchema>({
     instances: [],
     conversations: {},
     archiveQueue: {},
-    apiBaseUrl: 'http://172.236.254.239:31003',
+    apiBaseUrl: 'https://api-dev.memspider.com',
     supermodelUrl: 'http://172.236.254.239:31000',
   },
 })
