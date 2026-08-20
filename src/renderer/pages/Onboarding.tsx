@@ -3,14 +3,13 @@ import { useNavigate } from 'react-router-dom'
 
 export default function Onboarding() {
   const navigate = useNavigate()
-  const [step, setStep] = useState<'phone' | 'code'>('phone')
-  const [phone, setPhone] = useState('')
+  const [step, setStep] = useState<'email' | 'code'>('email')
+  const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [countdown, setCountdown] = useState(0)
 
-  // 倒计时
   React.useEffect(() => {
     if (countdown <= 0) return
     const t = setTimeout(() => setCountdown(c => c - 1), 1000)
@@ -18,15 +17,15 @@ export default function Onboarding() {
   }, [countdown])
 
   const handleSendCode = async () => {
-    const phone_re = /^1[3-9]\d{9}$/
-    if (!phone_re.test(phone)) {
-      setError('请输入正确的中国大陆手机号')
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRe.test(email.trim())) {
+      setError('请输入正确的邮箱地址')
       return
     }
     setLoading(true)
     setError('')
     try {
-      const result = await window.electronAPI.auth.sendCode(phone.trim())
+      const result = await window.electronAPI.auth.sendCode(email.trim())
       if (result.ok) {
         setStep('code')
         setCountdown(60)
@@ -48,7 +47,7 @@ export default function Onboarding() {
     setLoading(true)
     setError('')
     try {
-      const result = await window.electronAPI.auth.loginWithCode(phone.trim(), code.trim())
+      const result = await window.electronAPI.auth.loginWithCode(email.trim(), code.trim())
       if (result.ok) {
         navigate('/main')
       } else {
@@ -66,12 +65,9 @@ export default function Onboarding() {
     setError('')
     setLoading(true)
     try {
-      const result = await window.electronAPI.auth.sendCode(phone.trim())
-      if (result.ok) {
-        setCountdown(60)
-      } else {
-        setError(result.error || '发送失败')
-      }
+      const result = await window.electronAPI.auth.sendCode(email.trim())
+      if (result.ok) setCountdown(60)
+      else setError(result.error || '发送失败')
     } finally {
       setLoading(false)
     }
@@ -80,7 +76,6 @@ export default function Onboarding() {
   return (
     <div className="flex h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 select-none">
       <div className="w-full max-w-sm px-8 py-10 bg-white rounded-2xl shadow-lg">
-        {/* Logo */}
         <div className="mb-8 text-center">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-600 mb-4">
             <span className="text-white text-2xl font-bold">M</span>
@@ -89,16 +84,16 @@ export default function Onboarding() {
           <p className="text-sm text-gray-500 mt-1">记忆驱动的 AI 工作台</p>
         </div>
 
-        {step === 'phone' ? (
+        {step === 'email' ? (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">手机号</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">邮箱</label>
               <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSendCode()}
-                placeholder="请输入中国大陆手机号"
+                placeholder="请输入邮箱地址"
                 className="w-full px-3.5 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all placeholder-gray-300"
                 autoFocus
               />
@@ -134,19 +129,19 @@ export default function Onboarding() {
               <div className="flex items-center justify-between mb-1.5">
                 <label className="block text-sm font-medium text-gray-700">验证码</label>
                 <button
-                  onClick={() => { setStep('phone'); setCode(''); setError('') }}
+                  onClick={() => { setStep('email'); setCode(''); setError('') }}
                   className="text-xs text-gray-400 hover:text-gray-600"
                 >
-                  ← 修改手机号
+                  ← 修改邮箱
                 </button>
               </div>
-              <p className="text-xs text-gray-400 mb-2">已发送至 {phone.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')}</p>
+              <p className="text-xs text-gray-400 mb-2">验证码已发至 {email}</p>
               <input
                 type="text"
                 value={code}
                 onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
-                placeholder="请输入 6 位验证码"
+                placeholder="6 位验证码"
                 className="w-full px-3.5 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all placeholder-gray-300 tracking-widest text-center text-lg"
                 autoFocus
                 maxLength={6}
