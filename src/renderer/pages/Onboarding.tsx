@@ -48,14 +48,14 @@ export default function Onboarding() {
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              MS API Key
+              MS Token
             </label>
             <input
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="请输入你的 API Key"
+              placeholder="ms_xxx（去 dashboard → API Token 标签页生成）"
               className="w-full px-3.5 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all placeholder-gray-300"
               autoFocus
             />
