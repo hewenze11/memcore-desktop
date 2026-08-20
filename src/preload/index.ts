@@ -10,7 +10,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('electronAPI', {
   // ── Auth ───────────────────────────────────────────────────────────────────
   auth: {
-    verify: (key: string) => ipcRenderer.invoke('auth.verify', key),
+    sendCode: (phone: string) => ipcRenderer.invoke('auth.sendCode', phone),
+    loginWithCode: (phone: string, code: string) => ipcRenderer.invoke('auth.loginWithCode', phone, code),
     getKey: () => ipcRenderer.invoke('auth.getKey'),
     clear: () => ipcRenderer.invoke('auth.clear'),
     getUserInfo: () => ipcRenderer.invoke('auth.getUserInfo'),
