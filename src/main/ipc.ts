@@ -40,12 +40,15 @@ function safeSend(sender: WebContents, channel: string, data: unknown): void {
 ipcMain.handle('auth.sendCode', async (_event, email: string) => {
   const baseUrl = getApiBaseUrl()
   try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10000)
     const res = await fetch(`${baseUrl}/auth/email/send-code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
-      signal: AbortSignal.timeout(10000),
+      signal: controller.signal,
     })
+    clearTimeout(timer)
     const data = await res.json() as { ok?: boolean; error?: string }
     if (!res.ok) {
       return { ok: false, error: data.error || '发送失败' }
@@ -53,10 +56,10 @@ ipcMain.handle('auth.sendCode', async (_event, email: string) => {
     return { ok: true }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (msg.includes('timeout') || msg.includes('abort')) {
+    if (msg.includes('abort') || msg.includes('timeout') || msg.includes('ETIMEDOUT')) {
       return { ok: false, error: '连接超时，请检查网络' }
     }
-    return { ok: false, error: '网络错误，请检查连接' }
+    return { ok: false, error: `网络错误: ${msg}` }
   }
 })
 
