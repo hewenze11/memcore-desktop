@@ -36,17 +36,17 @@ function safeSend(sender: WebContents, channel: string, data: unknown): void {
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
-// ── 发送验证码 ────────────────────────────────────────────────────────────────
-ipcMain.handle('auth.sendCode', async (_event, phone: string) => {
+// ── 发送邮箱验证码 ─────────────────────────────────────────────────────────────
+ipcMain.handle('auth.sendCode', async (_event, email: string) => {
   const baseUrl = getApiBaseUrl()
   try {
-    const res = await fetch(`${baseUrl}/auth/sms/send-code`, {
+    const res = await fetch(`${baseUrl}/auth/email/send-code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone }),
+      body: JSON.stringify({ email }),
       signal: AbortSignal.timeout(10000),
     })
-    const data = await res.json() as { ok?: boolean; error?: string; retry_after?: number }
+    const data = await res.json() as { ok?: boolean; error?: string }
     if (!res.ok) {
       return { ok: false, error: data.error || '发送失败' }
     }
@@ -60,27 +60,27 @@ ipcMain.handle('auth.sendCode', async (_event, phone: string) => {
   }
 })
 
-// ── 验证码登录 ────────────────────────────────────────────────────────────────
-ipcMain.handle('auth.loginWithCode', async (_event, phone: string, code: string) => {
+// ── 邮箱验证码登录 ────────────────────────────────────────────────────────────
+ipcMain.handle('auth.loginWithCode', async (_event, email: string, code: string) => {
   if (!safeStorage.isEncryptionAvailable()) {
     return { ok: false, error: '系统加密不可用' }
   }
   const baseUrl = getApiBaseUrl()
   try {
-    const res = await fetch(`${baseUrl}/auth/sms/login`, {
+    const res = await fetch(`${baseUrl}/auth/email/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, code }),
+      body: JSON.stringify({ email, code }),
       signal: AbortSignal.timeout(10000),
     })
-    const data = await res.json() as { token?: string; user_id?: string; phone?: string; is_new_user?: boolean; error?: string }
-    if (!res.ok || !data.token) {
+    const data = await res.json() as { access_token?: string; user_id?: string; email?: string; is_new_user?: boolean; error?: string }
+    if (!res.ok || !data.access_token) {
       return { ok: false, error: data.error || '验证码不正确' }
     }
-    saveApiKey(data.token)
-    saveUserInfo({ email: data.phone || phone, plan: 'free' })
+    saveApiKey(data.access_token)
+    saveUserInfo({ email: data.email || email, plan: 'free' })
     setOnboardingDone(true)
-    return { ok: true, phone: data.phone || phone }
+    return { ok: true, email: data.email || email }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('timeout') || msg.includes('abort')) {
