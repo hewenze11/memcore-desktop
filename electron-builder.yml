@@ -8,7 +8,6 @@ directories:
 
 files:
   - dist/**/*
-  - src/renderer/**/*
   - node_modules/**/*
   - package.json
 
@@ -17,7 +16,7 @@ win:
     - target: nsis
       arch:
         - x64
-  # icon: build/icon.ico  # TODO: 放置品牌图标后取消注释
+  icon: build/icon.ico
 
 nsis:
   oneClick: false
