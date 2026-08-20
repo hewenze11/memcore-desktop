@@ -98,6 +98,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 自动更新官网下载链接
+      - name: Update download page in memory-spider-web
+        if: github.ref == 'refs/heads/main' && success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${APP_VERSION}-${SHORT_SHA}"
+          NEW_URL="https://github.com/hewenze11/memcore-desktop/releases/download/${TAG}/MemCore.Setup.1.0.0.exe"
+          git clone https://x-access-token:${GH_TOKEN}@github.com/hewenze11/memory-spider-web.git /tmp/web
+          cd /tmp/web
+          git config user.email "ci@cayan.ai"
+          git config user.name "CI Bot"
+          DLFILE="src/app/download/page.tsx"
+          sed -i -E "s|https://github.com/hewenze11/memcore-desktop/releases/download/[^/]+/MemCore[.]Setup[.]1[.]0[.]0[.]exe|${NEW_URL}|g" "${DLFILE}"
+          git add "${DLFILE}"
+          git diff --staged --quiet || git commit -m "ci: update memcore download URL to ${TAG} [skip ci]"
+          git push origin main
+
       # 飞书通知
       - name: Notify Feishu on success
         if: success()
