@@ -145,4 +145,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke('shell.openExternal', url),
   },
+  app: {
+    getLogPath: () => ipcRenderer.invoke('app.getLogPath'),
+  },
 })
