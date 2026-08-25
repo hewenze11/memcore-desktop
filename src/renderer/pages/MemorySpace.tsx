@@ -10,6 +10,7 @@
  */
 
 import React, { useEffect, useState, useCallback } from 'react'
+import MarkdownRenderer from '../components/MarkdownRenderer'
 import { useNavigate, useParams } from 'react-router-dom'
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
@@ -149,7 +150,7 @@ function CoreDocsPanel({ setToast }: { setToast: (m: string) => void }) {
   return (
     <div className="p-4 space-y-3">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-xs text-gray-400">核心文档是每次 AI 对话都会优先召回的长期记忆（最多 20 条，每条 2000 字节）</p>
+        <p className="text-xs text-[#505050]">核心文档是每次 AI 对话都会优先召回的长期记忆（最多 20 条，每条 2000 字节）</p>
         <button
           onClick={() => setCreating(true)}
           className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex-shrink-0 ml-4"
@@ -290,7 +291,7 @@ function TagsPanel({ setToast }: { setToast: (m: string) => void }) {
 
   return (
     <div className="p-4 space-y-3">
-      <p className="text-xs text-gray-400">标签用于对记忆内容分类，归档时会自动关联匹配的标签</p>
+      <p className="text-xs text-[#505050]">标签用于对记忆内容分类，归档时会自动关联匹配的标签</p>
 
       {/* 新建标签 */}
       <div className="flex gap-2">
@@ -375,7 +376,7 @@ function ArchivePanel() {
           >
             <span className="text-sm font-medium text-gray-700">{date}</span>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400">{items.length} 条归档</span>
+              <span className="text-xs text-[#505050]">{items.length} 条归档</span>
               <span className="text-gray-400">{expanded.has(date) ? '▴' : '▾'}</span>
             </div>
           </button>
@@ -387,7 +388,7 @@ function ArchivePanel() {
                     {new Date(s.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                     · session {s.session_id.slice(0, 8)}...
                   </p>
-                  <p className="text-sm text-gray-700 leading-relaxed">{s.content}</p>
+                  <div className="text-sm text-[#d0d0d0] leading-relaxed"><MarkdownRenderer content={s.content} /></div>
                 </div>
               ))}
             </div>
@@ -488,7 +489,7 @@ function SearchPanel() {
                 {new Date(msg.created_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </span>
             </div>
-            <p className="text-sm text-gray-700 leading-relaxed line-clamp-4">{msg.content}</p>
+            <div className="text-sm text-[#d0d0d0] leading-relaxed line-clamp-4"><MarkdownRenderer content={msg.content} /></div>
           </div>
         ))}
       </div>
@@ -626,7 +627,7 @@ export default function MemorySpace() {
 
   if (instanceNotFound) {
     return (
-      <div className="flex flex-col h-screen bg-white items-center justify-center">
+      <div className="flex flex-col h-screen bg-[#080808] items-center justify-center">
         <p className="text-gray-400 text-sm mb-3">找不到该实例，请返回重试</p>
         <button onClick={() => navigate('/')} className="text-sm text-indigo-600 hover:underline">返回主界面</button>
       </div>
@@ -634,31 +635,31 @@ export default function MemorySpace() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-white overflow-hidden select-none">
+    <div className="flex flex-col h-screen bg-[#080808] overflow-hidden select-none">
       {/* 顶栏 */}
-      <header className="flex items-center px-5 py-3 border-b border-gray-100 bg-white flex-shrink-0">
+      <header className="flex items-center px-5 py-3 border-b border-[#1a1a1a] bg-[#0c0c0c] flex-shrink-0">
         <button
           onClick={() => navigate('/')}
-          className="p-1.5 text-gray-400 hover:text-gray-600 mr-3 rounded-lg hover:bg-gray-100"
+          className="p-1.5 text-[#505050] hover:text-white mr-3 rounded-lg hover:bg-[#1a1a1a]"
         >
           ←
         </button>
         <div className="flex-1">
-          <p className="font-medium text-gray-800 text-sm">记忆空间</p>
-          {instanceName && <p className="text-xs text-gray-400">{instanceName}</p>}
+          <p className="font-medium text-white text-sm">记忆空间</p>
+          {instanceName && <p className="text-xs text-[#505050]">{instanceName}</p>}
         </div>
       </header>
 
       {/* Tab 栏 */}
-      <div className="flex border-b border-gray-100 px-4 flex-shrink-0">
+      <div className="flex border-b border-[#1a1a1a] px-4 flex-shrink-0">
         {tabs.map(t => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
             className={`text-sm px-4 py-2.5 border-b-2 transition-colors ${
               tab === t.key
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-gray-400 hover:text-gray-600'
+                ? 'border-white text-white'
+                : 'border-transparent text-[#404040] hover:text-[#909090]'
             }`}
           >
             {t.label}
@@ -667,7 +668,7 @@ export default function MemorySpace() {
       </div>
 
       {/* 内容区 */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto bg-[#080808]">
         {tab === 'docs' && <CoreDocsPanel setToast={setToast} />}
         {tab === 'tags' && <TagsPanel setToast={setToast} />}
         {tab === 'archive' && <ArchivePanel />}
