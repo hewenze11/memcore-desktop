@@ -77,7 +77,7 @@ const store = new Store<StoreSchema>({
     conversations: {},
     archiveQueue: {},
     apiBaseUrl: 'https://api-dev.memspider.com',
-    supermodelUrl: 'https://supermodel-dev.memspider.com',
+    supermodelUrl: 'http://172.236.254.239:31004',
   },
 })
 
@@ -281,7 +281,7 @@ const LEGACY_SUPERMODEL_URLS = [
 ]
 const currentSupermodelUrl = store.get('supermodelUrl')
 if (LEGACY_SUPERMODEL_URLS.includes(currentSupermodelUrl)) {
-  store.set('supermodelUrl', 'https://supermodel-dev.memspider.com')
+  store.set('supermodelUrl', 'http://172.236.254.239:31004')
 }
 
 export function getApiBaseUrl(): string {
