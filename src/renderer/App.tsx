@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Onboarding from './pages/Onboarding'
 import Main from './pages/Main'
 import Settings from './pages/Settings'
@@ -18,14 +18,14 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#f0f0f0]">
-        <div className="text-gray-400 text-sm">加载中...</div>
+      <div className="flex h-screen items-center justify-center bg-[#080808]">
+        <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
       </div>
     )
   }
 
   return (
-    <HashRouter>
+    <MemoryRouter initialEntries={[onboardingDone ? '/main' : '/onboarding']} initialIndex={0}>
       <Routes>
         <Route path="/" element={<Navigate to={onboardingDone ? '/main' : '/onboarding'} replace />} />
         <Route path="/onboarding" element={<Onboarding />} />
@@ -33,6 +33,6 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/memory/:instanceId" element={<MemorySpace />} />
       </Routes>
-    </HashRouter>
+    </MemoryRouter>
   )
 }
