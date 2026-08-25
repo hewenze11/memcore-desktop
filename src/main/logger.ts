@@ -1,78 +1,45 @@
 /**
  * logger.ts — 主进程日志模块
  *
- * - 写入 %APPDATA%/memcore-desktop/logs/YYYY-MM-DD.log
- * - 格式：[HH:MM:SS.mmm] [LEVEL] message (+ 可选 JSON data)
- * - 自动保留最近 7 天日志，启动时清理旧文件
- * - 菜单/IPC 可调用 getLogDir() / getLogPath() 让用户打开日志目录
+ * 日志写入 userData/memcore-debug.log，同时输出到 stdout/stderr。
+ * 超过 2MB 自动截断（保留后半段），防止磁盘爆满。
+ * 用法：import { logger } from './logger'
  */
-
+import { app } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import { app } from 'electron'
 
-// ── 路径 ──────────────────────────────────────────────────────────────────────
+const LOG_FILE = path.join(app.getPath('userData'), 'memcore-debug.log')
+const MAX_BYTES = 2 * 1024 * 1024  // 2MB
 
-function getLogDir(): string {
-  const dir = path.join(app.getPath('userData'), 'logs')
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  return dir
-}
-
-function getLogPath(): string {
-  const date = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
-  return path.join(getLogDir(), `${date}.log`)
-}
-
-// ── 旧日志清理（保留最近 7 天）─────────────────────────────────────────────────
-
-function purgeOldLogs(): void {
+function truncateIfNeeded() {
   try {
-    const dir = getLogDir()
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.log')).sort()
-    const keep = 7
-    if (files.length > keep) {
-      files.slice(0, files.length - keep).forEach(f => {
-        try { fs.unlinkSync(path.join(dir, f)) } catch { /* ignore */ }
-      })
+    const stat = fs.statSync(LOG_FILE)
+    if (stat.size > MAX_BYTES) {
+      const fd = fs.openSync(LOG_FILE, 'r')
+      const half = Math.floor(stat.size / 2)
+      const buf = Buffer.alloc(stat.size - half)
+      fs.readSync(fd, buf, 0, buf.length, half)
+      fs.closeSync(fd)
+      fs.writeFileSync(LOG_FILE, '--- [log rotated] ---\n' + buf.toString())
     }
   } catch { /* ignore */ }
 }
 
-// ── 写入 ──────────────────────────────────────────────────────────────────────
-
-type Level = 'INFO' | 'WARN' | 'ERROR' | 'DEBUG'
-
-function write(level: Level, message: string, data?: unknown): void {
-  const now = new Date()
-  const time = now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0')
-  let line = `[${time}] [${level}] ${message}`
-  if (data !== undefined) {
-    try { line += ' ' + JSON.stringify(data) } catch { line += ' [unserializable]' }
-  }
-  line += '\n'
-
-  // 同时输出到 console（开发调试用）
-  if (level === 'ERROR') console.error(line.trimEnd())
-  else if (level === 'WARN') console.warn(line.trimEnd())
-  else console.log(line.trimEnd())
-
-  // 写文件（同步，主进程无需异步）
-  try {
-    fs.appendFileSync(getLogPath(), line, 'utf8')
-  } catch { /* 写失败不崩溃，静默忽略 */ }
+function write(level: string, ...args: unknown[]) {
+  const ts = new Date().toISOString()
+  const line = `[${ts}] [${level}] ${args.map(a =>
+    typeof a === 'object' ? JSON.stringify(a) : String(a)
+  ).join(' ')}\n`
+  try { truncateIfNeeded(); fs.appendFileSync(LOG_FILE, line) } catch { /* ignore */ }
+  if (level === 'ERROR') process.stderr.write(line)
+  else process.stdout.write(line)
 }
-
-// ── 公开 API ──────────────────────────────────────────────────────────────────
 
 export const logger = {
-  info:  (msg: string, data?: unknown) => write('INFO',  msg, data),
-  warn:  (msg: string, data?: unknown) => write('WARN',  msg, data),
-  error: (msg: string, data?: unknown) => write('ERROR', msg, data),
-  debug: (msg: string, data?: unknown) => write('DEBUG', msg, data),
-  getLogDir,
-  getLogPath,
-  purgeOldLogs,
+  info:    (...args: unknown[]) => write('INFO ', ...args),
+  warn:    (...args: unknown[]) => write('WARN ', ...args),
+  error:   (...args: unknown[]) => write('ERROR', ...args),
+  debug:   (...args: unknown[]) => write('DEBUG', ...args),
+  logPath: () => LOG_FILE,
 }
-
-export default logger
