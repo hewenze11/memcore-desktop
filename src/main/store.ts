@@ -264,6 +264,17 @@ export function setAdvancedMode(enabled: boolean): void {
   store.set('advancedMode', enabled)
 }
 
+// ── 版本迁移：清除旧的错误 API 地址 ───────────────────────────────────────
+const LEGACY_URLS = [
+  'http://172.236.254.239:31003',
+  'http://172.236.254.239:31015',
+  'http://172.236.254.239:31012',
+]
+const currentApiUrl = store.get('apiBaseUrl')
+if (LEGACY_URLS.includes(currentApiUrl)) {
+  store.set('apiBaseUrl', 'https://api-dev.memspider.com')
+}
+
 export function getApiBaseUrl(): string {
   return store.get('apiBaseUrl')
 }
