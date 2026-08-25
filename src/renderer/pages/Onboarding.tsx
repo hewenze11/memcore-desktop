@@ -49,7 +49,7 @@ export default function Onboarding() {
     try {
       const result = await window.electronAPI.auth.loginWithCode(email.trim(), code.trim())
       if (result.ok) {
-        navigate('/main')
+        navigate('/main', { replace: true })
       } else {
         setError(result.error || '验证码不正确，请重试')
       }
