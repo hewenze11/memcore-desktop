@@ -6,6 +6,7 @@
  */
 
 import { ipcMain, safeStorage, WebContents, dialog } from 'electron'
+import { logger } from './logger'
 import { randomUUID } from 'crypto'
 import {
   saveApiKey, getApiKey, clearApiKey,
@@ -39,6 +40,7 @@ function safeSend(sender: WebContents, channel: string, data: unknown): void {
 // ── 发送邮箱验证码 ─────────────────────────────────────────────────────────────
 ipcMain.handle('auth.sendCode', async (_event, email: string) => {
   const baseUrl = getApiBaseUrl()
+  logger.info('auth.sendCode', { baseUrl })
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 10000)
@@ -69,6 +71,7 @@ ipcMain.handle('auth.loginWithCode', async (_event, email: string, code: string)
     return { ok: false, error: '系统加密不可用' }
   }
   const baseUrl = getApiBaseUrl()
+  logger.info('auth.loginWithCode', { baseUrl })
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 10000)
