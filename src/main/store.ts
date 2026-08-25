@@ -77,7 +77,7 @@ const store = new Store<StoreSchema>({
     conversations: {},
     archiveQueue: {},
     apiBaseUrl: 'https://api-dev.memspider.com',
-    supermodelUrl: 'http://172.236.254.239:31000',
+    supermodelUrl: 'https://supermodel-dev.memspider.com',
   },
 })
 
@@ -273,6 +273,15 @@ const LEGACY_URLS = [
 const currentApiUrl = store.get('apiBaseUrl')
 if (LEGACY_URLS.includes(currentApiUrl)) {
   store.set('apiBaseUrl', 'https://api-dev.memspider.com')
+}
+// 同时修复旧的 supermodelUrl
+const LEGACY_SUPERMODEL_URLS = [
+  'http://172.236.254.239:31000',
+  'http://172.236.254.239:31015',
+]
+const currentSupermodelUrl = store.get('supermodelUrl')
+if (LEGACY_SUPERMODEL_URLS.includes(currentSupermodelUrl)) {
+  store.set('supermodelUrl', 'https://supermodel-dev.memspider.com')
 }
 
 export function getApiBaseUrl(): string {
