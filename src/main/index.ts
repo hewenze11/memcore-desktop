@@ -16,6 +16,7 @@ import { join } from 'path'
 // 注册所有 IPC handler（必须在 app.whenReady 之前 import）
 import { activeStreams } from './ipc'
 import { retryQueue } from './memory'
+import { logger } from './logger'
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 
@@ -84,7 +85,11 @@ ipcMain.handle('window:close', () => {
 
 // ── App 生命周期 ───────────────────────────────────────────────────────────────
 
+ipcMain.handle('app.getLogPath', () => logger.logPath())
+
 app.whenReady().then(() => {
+  logger.info('app starting', { version: app.getVersion(), platform: process.platform, arch: process.arch })
+  logger.info('log file path:', logger.logPath())
   createMainWindow()
 
   // 启动时后台静默重试归档队列
