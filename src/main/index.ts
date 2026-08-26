@@ -36,6 +36,7 @@ function createMainWindow(): void {
     minHeight: 600,
     title: 'MemCore',
     frame: true,
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -88,6 +89,7 @@ ipcMain.handle('window:close', () => {
 ipcMain.handle('app.getLogPath', () => logger.logPath())
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null)
   logger.info('app starting', { version: app.getVersion(), platform: process.platform, arch: process.arch })
   logger.info('log file path:', logger.logPath())
   createMainWindow()
