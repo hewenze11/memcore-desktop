@@ -317,6 +317,13 @@ export function getSupermodelUrl(): string {
   return store.get('supermodelUrl')
 }
 
+// supermodel 서버 인증용 키 (ms JWT가 아닌 supermodel 전용 키)
+const DEFAULT_SUPERMODEL_KEY = 'sm-memory-spider-dev-2026'
+
+export function getSupermodelKey(): string {
+  return (store as any).get('supermodelKey') || DEFAULT_SUPERMODEL_KEY
+}
+
 // ── 归档重试队列 ──────────────────────────────────────────────────────────────
 
 export function getArchiveQueue(): Record<string, ArchiveItem[]> {
