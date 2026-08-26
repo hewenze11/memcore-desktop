@@ -81,6 +81,31 @@ const store = new Store<StoreSchema>({
   },
 })
 
+
+// ── 版本迁移：旧地址自动修正 ─────────────────────────────────────────────────
+const CURRENT_SUPERMODEL_URL = 'http://172.236.254.239:31004'
+const CURRENT_API_BASE_URL = 'https://api-dev.memspider.com'
+const STALE_SUPERMODEL_URLS = [
+  'http://172.236.254.239:31000',
+  'http://172.236.254.239:31001',
+  'http://supermodel-dev.memspider.com',
+  'https://supermodel-dev.memspider.com',
+]
+
+function migrateConfig() {
+  const cur = store.get('supermodelUrl')
+  if (!cur || STALE_SUPERMODEL_URLS.includes(cur)) {
+    store.set('supermodelUrl', CURRENT_SUPERMODEL_URL)
+    console.log('[migration] supermodelUrl reset to', CURRENT_SUPERMODEL_URL)
+  }
+  const apiBase = store.get('apiBaseUrl')
+  if (!apiBase) {
+    store.set('apiBaseUrl', CURRENT_API_BASE_URL)
+  }
+}
+
+migrateConfig()
+
 // ── safeStorage 工具 ───────────────────────────────────────────────────────────
 
 function encryptValue(value: string): string {
