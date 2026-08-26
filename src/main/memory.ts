@@ -7,6 +7,7 @@
 import {
   getApiKey,
   getSupermodelUrl,
+  getSupermodelKey,
   enqueueArchive,
   removeFromQueue,
   incrementRetry,
@@ -31,9 +32,7 @@ export async function recall(params: {
   workspaceId: string
   userMessage: string
 }): Promise<RecallResult> {
-  const key = getApiKey()
-  if (!key) return { ok: false, reason: 'no_key' }
-
+  const key = getSupermodelKey()
   const supermodelUrl = getSupermodelUrl()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS)
@@ -86,9 +85,7 @@ export async function archiveAsync(item: ArchiveItem): Promise<'ok' | 'queued'> 
 }
 
 async function doArchive(item: ArchiveItem): Promise<void> {
-  const key = getApiKey()
-  if (!key) throw new Error('NO_KEY')
-
+  const key = getSupermodelKey()
   const supermodelUrl = getSupermodelUrl()
   const res = await fetch(`${supermodelUrl}/v1/chat/completions`, {
     method: 'POST',
