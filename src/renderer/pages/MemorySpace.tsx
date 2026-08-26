@@ -629,7 +629,7 @@ export default function MemorySpace() {
     return (
       <div className="flex flex-col h-screen bg-[#080808] items-center justify-center">
         <p className="text-gray-400 text-sm mb-3">找不到该实例，请返回重试</p>
-        <button onClick={() => navigate('/')} className="text-sm text-indigo-600 hover:underline">返回主界面</button>
+        <button onClick={() => navigate('/main')} className="text-sm text-indigo-600 hover:underline">返回主界面</button>
       </div>
     )
   }
@@ -639,7 +639,7 @@ export default function MemorySpace() {
       {/* 顶栏 */}
       <header className="flex items-center px-5 py-3 border-b border-[#1a1a1a] bg-[#0c0c0c] flex-shrink-0">
         <button
-          onClick={() => navigate('/')}
+          onClick={() => navigate('/main')}
           className="p-1.5 text-[#505050] hover:text-white mr-3 rounded-lg hover:bg-[#1a1a1a]"
         >
           ←
