@@ -202,16 +202,18 @@ function MessageBubble({ msg }: { msg: ChatMessage & { streaming?: boolean } }) 
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-3 group`}
       onMouseEnter={() => setShowTime(true)} onMouseLeave={() => setShowTime(false)}>
       <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[75%]`}>
-        <div className={`px-4 py-2.5 rounded-2xl text-sm break-words ${
-          isUser
-            ? 'bg-white text-black rounded-br-sm whitespace-pre-wrap leading-relaxed'
-            : 'bg-[#1a1a1a] border border-[#2a2a2a] text-[#d0d0d0] rounded-bl-sm'
-        }`}>
-          {isUser
-            ? (msg.content || (msg.streaming ? <span className="opacity-40">▍</span> : null))
-            : (msg.content ? <MarkdownRenderer content={msg.content} /> : (msg.streaming ? <span className="opacity-40">▍</span> : null))
-          }
-        </div>
+        {(msg.content || msg.streaming) && (
+          <div className={`px-4 py-2.5 rounded-2xl text-sm break-words ${
+            isUser
+              ? 'bg-white text-black rounded-br-sm whitespace-pre-wrap leading-relaxed'
+              : 'bg-[#1a1a1a] border border-[#2a2a2a] text-[#d0d0d0] rounded-bl-sm'
+          }`}>
+            {isUser
+              ? (msg.content || (msg.streaming ? <span className="opacity-40">▍</span> : null))
+              : (msg.content ? <MarkdownRenderer content={msg.content} /> : <span className="opacity-40">▍</span>)
+            }
+          </div>
+        )}
         {timeStr && (
           <span className={`text-[10px] text-[#404040] mt-0.5 mx-1 transition-opacity duration-150 ${showTime ? 'opacity-100' : 'opacity-0'}`}>
             {timeStr}
@@ -508,9 +510,10 @@ export default function Main() {
               </div>
               {/* 高级模式 */}
               <button onClick={() => { setAdvancedMode(v => !v); if (awaitingConfirm) handleCancelAdvanced() }}
-                title={advancedMode ? '关闭高级模式' : '开启高级模式（记忆上下文审查）'}
-                className={`p-1.5 rounded-lg text-sm transition-colors ${advancedMode ? 'bg-amber-900/40 text-amber-400' : 'text-[#404040] hover:text-amber-400 hover:bg-amber-900/20'}`}>
-                ⚡
+                title={advancedMode ? '关闭高级模式' : '开启高级模式（发送前可审查/编辑记忆上下文）'}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${advancedMode ? 'bg-amber-900/40 text-amber-400 border border-amber-800/40' : 'text-[#505050] border border-[#2a2a2a] hover:text-amber-400 hover:border-amber-800/40'}`}>
+                <span>⚡</span>
+                <span>高级模式</span>
               </button>
             </header>
 
