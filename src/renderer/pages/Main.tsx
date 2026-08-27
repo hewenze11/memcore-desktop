@@ -17,34 +17,90 @@ function AdvancedPanel({ memoryContext, onConfirm, onCancel, onRegenerate }: {
 }) {
   const [editedCtx, setEditedCtx] = useState(memoryContext)
   const [extraInstr, setExtraInstr] = useState('')
+  const charCount = editedCtx.length
+
   return (
-    <div className="border-t border-[#2a2a2a] bg-[#0d0d0d] px-4 py-3 space-y-2 flex-shrink-0">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-[#909090]">⚡ 记忆上下文</span>
-        <button onClick={onCancel} className="text-xs text-[#505050] hover:text-white transition-colors">取消</button>
-      </div>
-      <textarea value={editedCtx} onChange={e => setEditedCtx(e.target.value)} rows={4}
-        placeholder="（无记忆上下文，将直连算力模型）"
-        className="w-full text-xs border border-[#2a2a2a] bg-[#111] rounded-lg px-2.5 py-2 outline-none focus:border-[#505050] resize-none text-[#d0d0d0] leading-relaxed" />
-      <div className="flex gap-2">
-        <input type="text" value={extraInstr} onChange={e => setExtraInstr(e.target.value)}
-          placeholder="补充召回指令..."
-          className="flex-1 text-xs border border-[#2a2a2a] bg-[#111] rounded-lg px-2.5 py-1.5 outline-none focus:border-[#505050] text-[#d0d0d0]" />
-        <button onClick={() => { if (extraInstr.trim()) onRegenerate(extraInstr.trim()) }}
-          disabled={!extraInstr.trim()}
-          className="text-xs px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-[#909090] hover:text-white hover:border-[#505050] disabled:opacity-40 flex-shrink-0 transition-colors">
-          重新生成
+    <div className="border-t border-[#1e1e1e] bg-[#0a0a0a] flex-shrink-0">
+      {/* 헤더 */}
+      <div className="flex items-center justify-between px-5 py-3 border-b border-[#1a1a1a]">
+        <div className="flex items-center gap-2">
+          <span className="text-amber-400 text-sm">⚡</span>
+          <span className="text-xs font-semibold text-[#c0c0c0] tracking-wide">记忆上下文审查</span>
+          {charCount > 0 && (
+            <span className="text-[10px] text-[#404040] font-mono">{charCount} chars</span>
+          )}
+        </div>
+        <button
+          onClick={onCancel}
+          className="flex items-center gap-1 text-xs text-[#404040] hover:text-[#909090] transition-colors px-2 py-1 rounded hover:bg-[#1a1a1a]"
+        >
+          <span>✕</span>
+          <span>取消</span>
         </button>
       </div>
-      <button onClick={() => onConfirm(editedCtx)}
-        className="w-full py-2 bg-white text-black text-xs font-medium rounded-lg hover:bg-[#e8e8e8] transition-colors">
-        用此上下文发送
-      </button>
+
+      {/* 본문 */}
+      <div className="px-5 py-4 space-y-3">
+        {/* 기억 컨텍스트 편집 */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-[10px] uppercase tracking-widest text-[#404040] font-medium">
+              本轮召回的记忆片段
+            </label>
+            {editedCtx !== memoryContext && (
+              <button
+                onClick={() => setEditedCtx(memoryContext)}
+                className="text-[10px] text-[#404040] hover:text-amber-400 transition-colors"
+              >
+                重置
+              </button>
+            )}
+          </div>
+          <textarea
+            value={editedCtx}
+            onChange={e => setEditedCtx(e.target.value)}
+            rows={5}
+            placeholder="（记忆召回为空，将直连算力模型）"
+            className="w-full text-xs border border-[#222] bg-[#111] rounded-lg px-3 py-2.5 outline-none focus:border-[#3a3a3a] resize-none text-[#c8c8c8] leading-relaxed placeholder:text-[#303030] font-mono"
+          />
+        </div>
+
+        {/* 재召回 지시 */}
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <input
+              type="text"
+              value={extraInstr}
+              onChange={e => setExtraInstr(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && extraInstr.trim()) onRegenerate(extraInstr.trim()) }}
+              placeholder="补充召回指令，按 Enter 重新召回..."
+              className="w-full text-xs border border-[#222] bg-[#111] rounded-lg px-3 py-2 outline-none focus:border-[#3a3a3a] text-[#c8c8c8] placeholder:text-[#303030]"
+            />
+          </div>
+          <button
+            onClick={() => { if (extraInstr.trim()) onRegenerate(extraInstr.trim()) }}
+            disabled={!extraInstr.trim()}
+            className="text-xs px-3 py-2 rounded-lg border border-[#2a2a2a] text-[#505050] hover:border-amber-800/50 hover:text-amber-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+          >
+            重召回
+          </button>
+        </div>
+
+        {/* 확인 버튼 */}
+        <div className="flex justify-end pt-1">
+          <button
+            onClick={() => onConfirm(editedCtx)}
+            className="text-xs px-5 py-2 rounded-lg bg-white text-black font-medium hover:bg-[#e8e8e8] transition-colors"
+          >
+            确认发送
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
 
-// ── NewInstanceModal：内嵌模型配置 ────────────────────────────────────────────
+
 function NewInstanceModal({ models, onClose, onCreated, onModelAdded }: {
   models: ModelConfig[]
   onClose: () => void
